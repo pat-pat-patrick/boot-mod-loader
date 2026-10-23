@@ -33,8 +33,9 @@ use. It needs no settings.
   game's `boot` script was not checked on that build. Mods still start, because
   `boot` has not changed in an update so far. If the game misbehaves, update
   the loader.
-- **Settings of mods made for Mod Options Menu.** That menu's in-game tab is
-  gone with the update. The loader takes its place: those mods' settings show in
+- **Settings and keys of mods made for Mod Options Menu and Mod Bindings Menu.**
+  Those menus' in-game tabs are gone with the update. The loader takes their
+  place: those mods' settings and keys show in
   [HD2 Mod Setting GUI](https://github.com/pat-pat-patrick/hd2-mod-setting-gui),
   a small window outside the game, and a change applies in the game within a
   second. Settings you had made in Mod Options Menu carry over.
@@ -118,6 +119,34 @@ A mod that already writes its own list for the window (`<addon name>_options.jso
 is refused, so its settings are not listed twice. Nothing is hooked or read
 until a mod registers an option.
 
+### Mod Bindings Menu
+
+When no other mod defines it, the loader also sets `_G.ModBindingsMenu` before
+any mod loads, with the API of Mod Bindings Menu v2.3 (`api = 1`, `version = 4`):
+`register_binding(id, label, slot, options)`, `is_down(id)`, `poll(ids, out)`,
+`ready()`, `set_binding`, `binding`, `binding_info`, `revision` and `extended`.
+
+- Each mod's keys become a "Keys" page for the settings window
+  (`mbm_<mod>_options.json` / `_settings.txt`), under the title of the same
+  mod's Mod Options Menu list when it has one, so the window shows one mod. A
+  key's value is the game's key name (`q`, `f6`, `mouse 3`; empty for none):
+  the player's choice in the window, else the first keyboard or mouse key of
+  `options.default`.
+- `is_down(id)` answers from the engine's key state this frame by the
+  binding's trigger: `press` (the default: true on the frame the key goes
+  down), `release`, or `hold`. It is `nil` for an id that is not registered and
+  `false` without a key.
+- A key does not count while the game window has no focus
+  (`Window.has_focus`), or while the chat box is open, read from the local
+  player's body animation as Helmet Headlamp 1.6.0 does (likely, not proven).
+  The native menu's keys did not fire while typing in chat, so mods made for it
+  have no chat guard of their own. Both are asked only on a frame a key is down.
+- Bindings saved in Mod Bindings Menu are not carried over: their keys are in
+  the game's input settings under borrowed action names whose order is not
+  known here.
+- A mod's `gap = true` on a Mod Options Menu option (space above the row) is
+  passed on to the window as `"gap": true`.
+
 ## Building
 
 The release embeds the game's own `boot` bytecode. That code belongs to the
@@ -147,6 +176,9 @@ runs, against a fake game folder of real patch archives. It covers these cases:
 - `init` called twice;
 - `on_shutdown` order, a failing callback, and an error in the game's shutdown;
 - a checked and an unknown game version;
+- the Mod Bindings Menu look-alike: registration checks, the Keys page and its
+  title, defaults, press and hold, the focus and chat guards, a key set in the
+  window, `poll` and `set_binding`;
 - the Mod Options Menu look-alike: registration checks, carried-over values,
   the window's files, a change from the window, a half-written file, `set()`,
   a late registration, and a mod with its own list.

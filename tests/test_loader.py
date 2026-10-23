@@ -22,6 +22,10 @@ folder holds real patch archives built the way the mods' builders write them:
   version   a checked build_identifier is named in the log; an unknown one
             logs NOT THIS GAME VERSION and the mods still start; with no
             on_shutdown registered, shutdown is left as the game's own
+  bindings  ModBindingsMenu look-alike: registration checks, the keys list
+            under the mod's options title (a Keys page), defaults, press and
+            hold, the focus and chat guards, a key set in the window, poll,
+            set_binding; nil for an id not registered
   options   ModOptionsMenu look-alike: a mod registers a toggle, a choice
             (its label a function) and a slider; the menu's checks refuse a
             bad one; values from the old ModOptionsMenu.values carry over;
@@ -132,7 +136,7 @@ CAM = ("-- HD2-Addon: mods/test/cam\n"
        "MENU_OK = M.api == 1 and M.version == 3 and M.ready() == true\n"
        "R1 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = false })\n"
        "R2 = M.register_option('cam.mode', { type = 'choice', mod = 'Cam Test', label = function() return 'Mode' end,\n"
-       "  choices = { 'A', 'B', 'C' }, default = 1, description = 'Which mode' })\n"
+       "  choices = { 'A', 'B', 'C' }, default = 1, description = 'Which mode', gap = true })\n"
        "R3 = M.register_option('cam.fov', { type = 'slider', label = 'FOV', mod = 'Cam Test', min = 0, max = 10, step = 0.5, default = 2 })\n"
        "R4 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = false })\n"
        "R5 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = true })\n"
@@ -147,6 +151,123 @@ NATIVE = ("-- HD2-Addon: mods/test/native\n"
           "NATIVE_U = M.register_option('native.unit.abc', { type = 'toggle', label = 'U', mod = 'Native' })\n"
           "NATIVE_E = M.register_option('native.extra', { type = 'toggle', label = 'E', mod = 'Native', "
           "profile = true, profiles = true })\n")
+
+
+KEYS = ("-- HD2-Addon: mods/test/keys\n"
+        "local B = ModBindingsMenu\n"
+        "KB = {}\n"
+        "KB[1] = B.register_binding('keys.toggle', 'Toggle', nil, { category = 'Key Cat', default = 'f6' })\n"
+        "KB[2] = B.register_binding('keys.hold', function() return 'Hold' end, nil, { category = 'Key Cat', "
+        "default = { { button = 'middle', device = 'mouse', trigger = 'hold' } } })\n"
+        "KB[3] = B.register_binding('keys.none', 'None', nil, { category = 'Key Cat' })\n"
+        "KB[4] = B.register_binding('keys.toggle', 'Toggle', nil, { category = 'Key Cat', default = 'f6' })\n"
+        "KB[5] = B.register_binding('keys.toggle', 'Other', nil, {})\n"
+        "KB[6] = B.register_binding('keys.bad', {}, nil, {})\n"
+        "ModOptionsMenu.register_option('keys.speed', { type = 'toggle', label = 'Speed', mod = 'Key Test' })\n")
+
+ENGINE = r"""
+KB_PRESSED, KB_DOWN, MOUSE_DOWN, FOCUS, LAYER3, LAYER10 = {}, {}, {}, true, 67, 0
+local names = { [5] = 'f6', [6] = 'q', [7] = 'middle button **' }
+local function button(t) return function(id) return t[id] and 1 or 0 end end
+stingray.Keyboard = { button_name = function(id) return names[id] end,
+                      pressed = function(id) return KB_PRESSED[id] == true end,
+                      released = function(id) return false end, button = button(KB_DOWN) }
+stingray.Mouse = { button_name = function(id) return id == 2 and 'middle' or nil end,
+                   pressed = function(id) return false end, released = function(id) return false end,
+                   button = button(MOUSE_DOWN) }
+stingray.Window = { has_focus = function() return FOCUS end }
+stingray.Network = { game_session = function() return 'S' end, peer_id = function() return 'P' end }
+stingray.GameSession = {
+  objects_owned_by = function(s, p) return { 11 } end,
+  game_object_exists = function(s, g) return true end,
+  game_object_is_type = function(s, g, t) return (g == 11 and t == 'un6y1d') or (g == 22 and t == 'gl7xl2w') end,
+  game_object_field = function(s, g, f)
+    if g == 11 and f == 'baegche' then return 22 end
+    if g == 22 and f == 'state' then return 0 end
+    if g == 22 and f == 'position' then return 'here' end
+  end }
+stingray.Application.worlds = function() return { 'W' } end
+stingray.World = { units = function(w) return { 'BODY', 'ROCK' } end }
+stingray.Unit = { alive = function(u) return true end,
+                  has_node = function(u, n) return u == 'BODY' and n == 'attach_headlight' end,
+                  world_position = function(u, i) return 'there' end,
+                  has_animation_state_machine = function(u) return true end,
+                  animation_get_state = function(u) return 0, 0, LAYER3, 0, 0, 0, 0, 0, 0, LAYER10 end }
+stingray.Vector3 = { distance = function(a, b) return 0.4 end }
+"""
+
+
+def check_bindings(source, failures):
+    """The ModBindingsMenu look-alike: keys for the settings window."""
+    import json
+    root = tempfile.mkdtemp(prefix="bootloader_")
+    try:
+        fake_game(root, {1: ("mods/test/keys", KEYS, 2)})
+        rt = runtime(root, CHECKED)
+        rt.execute(ENGINE)
+        rt.eval("loadstring")(source, "=boot")()
+        ok(rt.eval("ModBindingsMenu.api == 1 and ModBindingsMenu.version == 4 and ModBindingsMenu.ready()") is True,
+           "ModBindingsMenu look-alike: api 1, version 4, ready()", failures)
+        rt.execute("init()")
+        r = rt.eval("table.concat({ tostring(KB[1]), tostring(KB[2]), tostring(KB[3]), tostring(KB[4]), "
+                    "tostring(KB[5]), tostring(KB[6]) }, ',')")
+        ok(r == "true,true,true,true,false,false",
+           "bindings registered; the same again true; a different label and a bad label refused: %r" % r, failures)
+        rt.execute("update(0.016)")
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+        listing = json.load(open(os.path.join(app, "mbm_keys_options.json"), encoding="utf-8"))
+        by_key = {o["key"]: o for o in listing["options"]}
+        ok(listing["title"] == "Key Test" and listing["pages"] == [{"name": "Keys", "keys": ["keys_toggle",
+           "keys_hold", "keys_none"]}] and all(o["type"] == "key" for o in listing["options"])
+           and by_key["keys_toggle"]["default"] == "f6" and by_key["keys_hold"]["default"] == "mouse 3"
+           and by_key["keys_none"]["default"] == "" and by_key["keys_hold"]["name"] == "Hold",
+           "the keys list: the mod's options title, a Keys page, key settings with defaults: %r" % listing, failures)
+        mom = json.load(open(os.path.join(app, "mom_keys_options.json"), encoding="utf-8"))
+        ok(mom["title"] == listing["title"], "the same title as the mod's options list (one mod in the window)",
+           failures)
+        text = open(os.path.join(app, "mbm_keys_settings.txt"), encoding="utf-8").read()
+        ok(text == "keys_toggle=f6\nkeys_hold=mouse 3\nkeys_none=\n#end\n", "the keys file: %r" % text, failures)
+
+        def down(id):
+            return rt.eval("ModBindingsMenu.is_down(%r)" % id)
+        ok(down("keys.toggle") is False and down("nope") is None and down("keys.none") is False,
+           "not pressed: false; no key: false; not registered: nil", failures)
+        rt.execute("KB_PRESSED[5] = true update(0.016)")
+        ok(down("keys.toggle") is True, "press: true on the frame f6 goes down", failures)
+        rt.execute("FOCUS = false update(0.016)")
+        ok(down("keys.toggle") is False, "held back while the game window has no focus", failures)
+        rt.execute("FOCUS = true LAYER3, LAYER10 = 72, 306 update(0.016)")
+        ok(down("keys.toggle") is False, "held back while the chat box is open (wrist 306, layer 3 72)", failures)
+        rt.execute("LAYER3, LAYER10 = 67, 0 update(0.016)")
+        ok(down("keys.toggle") is True, "through again once the chat box is closed", failures)
+        rt.execute("KB_PRESSED[5] = false MOUSE_DOWN[2] = true update(0.016)")
+        ok(down("keys.hold") is True and down("keys.toggle") is False,
+           "hold: the middle mouse button held; press: nothing new", failures)
+        rt.execute("MOUSE_DOWN[2] = false update(0.016)")
+        ok(down("keys.hold") is False, "hold: false once released", failures)
+
+        with open(os.path.join(app, "mbm_keys_settings.txt"), "w", newline="\n") as f:
+            f.write("keys_toggle=q\nkeys_hold=mouse 3\nkeys_none=\n#end\n")
+        for _ in range(3):
+            rt.execute("update(0.5)")
+        rt.execute("KB_PRESSED[6] = true update(0.016)")
+        ok(down("keys.toggle") is True, "a key set in the window (q) counts", failures)
+        polled = rt.eval("(function() local out = {} ModBindingsMenu.poll({ 'keys.toggle', 'keys.none' }, out) "
+                         "local a = tostring(out.down[1]) .. tostring(out.pressed[1]) "
+                         "KB_PRESSED[6] = false update(0.016) "
+                         "ModBindingsMenu.poll({ 'keys.toggle', 'keys.none' }, out) "
+                         "return a .. ',' .. tostring(out.down[1]) .. tostring(out.released[1]) .. tostring(out.down[2]) end)()")
+        ok(polled == "truetrue,falsetruefalse", "poll: down/pressed, then released: %r" % polled, failures)
+        rt.execute("ModBindingsMenu.set_binding('keys.toggle', {})")
+        info = rt.eval("ModBindingsMenu.binding_info('keys.toggle').state")
+        rt.execute("KB_PRESSED[6] = true update(0.016)")
+        ok(info == "cleared" and down("keys.toggle") is False, "set_binding {} clears the key: %r" % info, failures)
+        for _ in range(3):
+            rt.execute("update(0.5)")
+        text = open(os.path.join(app, "mbm_keys_settings.txt"), encoding="utf-8").read()
+        ok("keys_toggle=\n" in text, "and writes the file for the window: %r" % text, failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
 
 
 def check_options(source, failures):
@@ -179,6 +300,7 @@ def check_options(source, failures):
            and sorted(by_key) == ["cam_fov", "cam_mode", "cam_on"]
            and by_key["cam_mode"]["name"] == "Mode" and by_key["cam_mode"]["hint"] == "Which mode"
            and by_key["cam_mode"]["choices"] == ["A", "B", "C"]
+           and by_key["cam_mode"].get("gap") is True and "gap" not in by_key["cam_on"]
            and by_key["cam_on"]["name"] == "On" and "hint" not in by_key["cam_on"]
            and not any("en" in o or "zh" in o for o in listing["options"]) and "translations" not in listing
            and by_key["cam_fov"]["type"] == "slider" and by_key["cam_fov"]["step"] == 0.5
@@ -343,6 +465,7 @@ def check(source):
         ok(rt2.eval("rawequal(shutdown, GAME_SHUTDOWN)") is True, "no on_shutdown: shutdown left alone", failures)
         ok(rt2.eval("rawequal(update, GAME_UPDATE)") is True, "no option registered: update left alone", failures)
         check_options(source, failures)
+        check_bindings(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

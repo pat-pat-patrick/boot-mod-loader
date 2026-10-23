@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.3.6"
+local MARKER = "boot-mod-loader-0.5.0"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -189,7 +189,7 @@ end
 if rawget(_G, "CowboyBingusModLoader") == nil then
   rawset(_G, "CowboyBingusModLoader", {
     version = 17, api = 1, revision = MARKER,
-    capabilities = { after_startup = true, on_shutdown = true, open_log = true, mod_options = true, ffi = false, jit = false },
+    capabilities = { after_startup = true, on_shutdown = true, open_log = true, mod_options = true, mod_bindings = true, ffi = false, jit = false },
     game = game,
     open_log = function(name)
       local dir = loader_log_dir()
@@ -256,7 +256,7 @@ end
 -- own saved values (%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\
 -- ModOptionsMenu.values), so a player's settings from before the update
 -- carry over. Nothing is hooked or read unless a mod registers an option.
-local MOM = { groups = {}, list = {}, names = {}, natives = {}, options = {}, values = {}, callbacks = {},
+local MOM = { groups = {}, list = {}, names = {}, natives = {}, addon_title = {}, options = {}, values = {}, callbacks = {},
               at = 0, every = 1.0, MAX_OPTIONS = 32, MAX_MODS = 112, MAX_CHOICES = 16, NONE = {} }
 do
   local ok, dir = pcall(os.getenv, "APPDATA")
@@ -287,6 +287,7 @@ end
 
 function MOM.valid(o, v)
   if o.kind == "toggle" then return type(v) == "boolean" end
+  if o.kind == "key" then return type(v) == "string" end           -- a Mod Bindings Menu binding (below)
   if type(v) ~= "number" or v ~= v then return false end
   if o.kind == "choice" then return v % 1 == 0 and v >= 1 and v <= #o.choices end
   return v >= o.min and v <= o.max
@@ -294,6 +295,7 @@ end
 
 function MOM.encode(o, v)
   if o.kind == "toggle" then return v and "true" or "false" end
+  if o.kind == "key" then return v end
   if o.kind == "choice" then return tostring(v) end
   return string.format("%.6g", v)
 end
@@ -301,6 +303,7 @@ end
 function MOM.decode(o, text)
   if type(text) ~= "string" then return nil end
   text = string.match(text, "^%s*(.-)%s*$")
+  if o.kind == "key" then return string.lower(text) end                -- the game's key name, "" for none
   if o.kind == "toggle" then
     if text == "true" then return true elseif text == "false" then return false end
     return nil
@@ -316,7 +319,10 @@ function MOM.option(id, spec)
   if type(id) ~= "string" or id == "" or #id > 96 or string.find(id, "%c") or type(spec) ~= "table" then
     return nil, "invalid option registration"
   end
-  local o = { id = id, kind = spec.type, label = MOM.text(spec.label, 64), profile = spec.profile == true }
+  -- gap = true: the menu's space above the row (0.4.0, the user: "Mod
+  -- Options Menu has no headings, but it has gaps"), for the window's gap
+  local o = { id = id, kind = spec.type, label = MOM.text(spec.label, 64), profile = spec.profile == true,
+              gap = spec.gap == true }
   if o.label == nil then return nil, "invalid option registration" end
   if spec.description ~= nil then
     o.description = MOM.text(spec.description, 400)
@@ -436,6 +442,13 @@ function MOM.group(spec, addon)
         file_values = MOM.dir and MOM.read_values(MOM.dir .. name .. "_settings.txt") or {}, migrated = 0 }
   MOM.groups[key] = g
   MOM.list[#MOM.list + 1] = g
+  -- The same mod's keys (Mod Bindings Menu, below) take this title, so the
+  -- window shows both lists as one mod.
+  if addon ~= nil then
+    MOM.addon_title[addon] = title
+    local keys = MOM.groups["mbm:" .. addon]
+    if keys ~= nil then keys.dirty = true end
+  end
   return g
 end
 
@@ -578,7 +591,7 @@ function MOM.export(g)
     -- texts as plain strings (window 1.8.0); the menu's texts are in one
     -- language, so there are no "translations"
     local e = { key = o.key, type = o.kind, default = o.default, min = o.min, max = o.max, step = o.step,
-                name = o.label, hint = o.description }
+                name = o.label, hint = o.description, gap = o.gap or nil }
     if o.choices then
       e.choices = {}
       for i, c in ipairs(o.choices) do e.choices[i] = c end
@@ -589,7 +602,16 @@ function MOM.export(g)
   -- that asks for them itself, with profiles = true on any of its options
   -- (an extension the menu ignores; the user, 10-24: never inferred, not
   -- even from a profile option); absent otherwise.
-  local text = MOM.json({ title = g.title, version = "", settings = g.name .. "_settings.txt", pages = MOM.NONE,
+  -- A mod's keys (Mod Bindings Menu) are a "Keys" page under the title of
+  -- the same mod's options, so the window merges the two lists.
+  local title, pages = g.title, MOM.NONE
+  if g.keys then
+    title = (g.addon and MOM.addon_title[g.addon]) or g.title
+    local keys = {}
+    for i, o in ipairs(g.options) do keys[i] = o.key end
+    pages = { { name = "Keys", keys = keys } }
+  end
+  local text = MOM.json({ title = title, version = "", settings = g.name .. "_settings.txt", pages = pages,
                           options = opts, menu_owned = MOM.NONE, profile = MOM.profile_key(g),
                           profiles = g.profiles or nil }) .. "\n"
   local path = MOM.dir .. g.name .. "_options.json"
@@ -606,8 +628,9 @@ function MOM.export(g)
   end
   pcall(w.write, w, text)
   pcall(w.close, w)
-  say(string.format("ModOptionsMenu: %s (%s), %d option(s) -> %s_options.json%s", g.title, g.addon or "?",
-    #g.options, g.name, g.migrated > 0 and (", " .. g.migrated .. " value(s) carried over from Mod Options Menu") or ""))
+  say(string.format("%s: %s (%s), %d %s -> %s_options.json%s", g.keys and "ModBindingsMenu" or "ModOptionsMenu",
+    title, g.addon or "?", #g.options, g.keys and "key(s)" or "option(s)", g.name,
+    g.migrated > 0 and (", " .. g.migrated .. " value(s) carried over from Mod Options Menu") or ""))
 end
 
 -- Every value of a mod, in its options' order, ending #end.
@@ -724,11 +747,361 @@ function L.hook_update()
   if type(previous) ~= "function" then previous = nil end
   local tick = MOM.tick
   rawset(_G, "update", function(dt, ...)
+    MOM.frame = MOM.frame + 1                  -- Mod Bindings Menu's guards are asked once a frame
     pcall(tick, dt)
     if previous ~= nil then return previous(dt, ...) end
   end)
   say("ModOptionsMenu: the settings window's files are read once a second")
 end
+
+-- ------------------------------------------------------------ Mod Bindings Menu look-alike
+
+-- Mods written for CowboyBingus' Mod Bindings Menu (its tab needed ffi and
+-- is gone) register their keys here as before (v2.3's API: api 1, version 4).
+-- Each mod's keys become a "Keys" page for HD2 Mod Setting GUI,
+-- mbm_<mod>_options.json / _settings.txt, written and read as the Mod
+-- Options Menu lists above; the title is the same mod's options' title, so
+-- the window shows them as one mod. A value is the game's key name ("q",
+-- "f6", "mouse 3"; "" none), set by the player in the window, else the
+-- mod's options.default.
+--   is_down(id): what the binding's trigger asks, from the engine's own key
+--     state this frame -- press: Keyboard/Mouse.pressed (the frame it goes
+--     down; MBM's default), release: .released, hold: .button. nil for an id
+--     not registered; false without a key.
+--   Guards, asked only when a key is down, at most once a frame: the game
+--     window has focus (Window.has_focus, proven: alt-tab moves it), and the
+--     chat box is not open, read from the local body's animation as Helmet
+--     Headlamp 1.6.0 does (likely, not proven: the wrist raised, layer 10 =
+--     306, with layer 3 = 72). The native MBM's keys did not fire while
+--     typing in chat (the user, 2026-10-08), so mods made for it have no
+--     guard of their own.
+-- Old MBM bindings are not carried over: their keys are in the game's input
+-- settings under borrowed action names whose order is not known here.
+-- Cost: nothing per frame until a mod asks; is_down is one engine call per
+-- button the key names (one for a keyboard key), plus the guards on a frame
+-- a key is down.
+local MBB = { bindings = {}, buttons = {}, guard_frame = -1, guard_ok = true, count = 0,
+              MOUSE = { ["mouse 3"] = { "middle button **", "middle", "middle button" },
+                        ["mouse 4"] = { "x button 1 **", "extra_1", "x button 1" },
+                        ["mouse 5"] = { "x button 2 **", "extra_2", "x button 2" } },
+              FROM_MBM = { middle = "mouse 3", extra_1 = "mouse 4", extra_2 = "mouse 5" } }
+MOM.frame = 0
+
+-- name -> button id, per device, read once from button_name
+function MBB.ids(device)
+  local t = MBB.buttons[device]
+  if t ~= nil then return t end
+  t = {}
+  local f = type(device) == "table" and rawget(device, "button_name") or nil
+  if type(f) == "function" then
+    for id = 0, 511 do
+      local ok, n = pcall(f, id)
+      if ok and type(n) == "string" and t[string.lower(n)] == nil then t[string.lower(n)] = id end
+    end
+  end
+  MBB.buttons[device] = t
+  return t
+end
+
+-- A key name -> { {device, id}, ... }: a keyboard name on the keyboard only
+-- (the mouse has buttons named like keys), "mouse 3/4/5" on either device.
+function MBB.resolve(name)
+  if name == nil or name == "" then return nil end
+  local sr = rawget(_G, "stingray")
+  if type(sr) ~= "table" then return nil end
+  local kb, mouse = rawget(sr, "Keyboard"), rawget(sr, "Mouse")
+  local devices = MBB.MOUSE[name] and { kb, mouse } or { kb }
+  local found = {}
+  for _, n in ipairs(MBB.MOUSE[name] or { name }) do
+    for _, d in ipairs(devices) do
+      local id = type(d) == "table" and MBB.ids(d)[n] or nil
+      if id ~= nil then found[#found + 1] = { d, id } end
+    end
+  end
+  return found[1] and found or nil
+end
+
+-- One alternative of an MBM binding spec as the window's key name, and its
+-- trigger; nil for what the window cannot hold (controller, modifiers,
+-- wheel, left/right mouse).
+function MBB.alternative(a)
+  local button, device, trigger = a, "keyboard", "press"
+  if type(a) == "table" then
+    if type(a.modifiers) == "table" and a.modifiers[1] ~= nil then return nil end
+    button, device, trigger = a.button, a.device or "keyboard", a.trigger or "press"
+  end
+  if type(button) ~= "string" or (trigger ~= "press" and trigger ~= "release" and trigger ~= "hold") then return nil end
+  button = string.lower(button)
+  if device == "mouse" then
+    button = MBB.FROM_MBM[button]
+    if button == nil then return nil end
+  elseif device ~= "keyboard" then
+    return nil
+  end
+  return button, trigger
+end
+
+function MBB.default(spec)
+  if spec == nil then return "", "press" end
+  local list = (type(spec) == "table" and spec.button == nil) and spec or { spec }
+  for _, a in ipairs(list) do
+    local name, trigger = MBB.alternative(a)
+    if name ~= nil then return name, trigger end
+  end
+  return "", "press"
+end
+
+-- The local player's body, for the chat guard: the avatar (gl7xl2w, alive,
+-- state 0) of the player object (un6y1d) this peer owns, and the rig with
+-- attach_headlight within 3 m of it (as Helmet Headlamp binds its lamp).
+-- The scan runs on a key press only, and its gap doubles while it finds
+-- nothing.
+local CHAT = { wrist = 306, layer3 = 72, wait = 0, gap = 60 }
+function CHAT.ns(name)
+  local sr = rawget(_G, "stingray")
+  return type(sr) == "table" and rawget(sr, name) or nil
+end
+function CHAT.call(ns, name, ...)
+  local f = type(ns) == "table" and rawget(ns, name) or nil
+  if type(f) ~= "function" then return nil end
+  local ok, v = pcall(f, ...)
+  if ok then return v end
+  return nil
+end
+function CHAT.avatar(gs, session, peer)
+  local owned = CHAT.call(gs, "objects_owned_by", session, peer)
+  if type(owned) ~= "table" then return nil end
+  for _, goid in pairs(owned) do
+    if CHAT.call(gs, "game_object_is_type", session, goid, "un6y1d") == true then
+      local avatar = CHAT.call(gs, "game_object_field", session, goid, "baegche")
+      if type(avatar) == "number" and avatar ~= 32767
+         and CHAT.call(gs, "game_object_exists", session, avatar) == true
+         and CHAT.call(gs, "game_object_is_type", session, avatar, "gl7xl2w") == true
+         and CHAT.call(gs, "game_object_field", session, avatar, "state") == 0 then
+        return avatar
+      end
+    end
+  end
+  return nil
+end
+function CHAT.body(gs, session, avatar)
+  local unit = CHAT.ns("Unit")
+  if CHAT.avatar_seen == avatar and CHAT.unit ~= nil and CHAT.call(unit, "alive", CHAT.unit) == true then
+    return CHAT.unit
+  end
+  if CHAT.avatar_seen ~= avatar then CHAT.avatar_seen, CHAT.unit, CHAT.wait, CHAT.gap = avatar, nil, 0, 60 end
+  if CHAT.wait > MOM.frame then return nil end
+  local position = CHAT.call(gs, "game_object_field", session, avatar, "position")
+  local worlds = CHAT.call(CHAT.ns("Application"), "worlds")
+  local world_ns, vector = CHAT.ns("World"), CHAT.ns("Vector3")
+  local best, nearest = nil, 3.0
+  if position ~= nil and type(worlds) == "table" then
+    for _, world in pairs(worlds) do
+      local units = CHAT.call(world_ns, "units", world)
+      if type(units) == "table" then
+        for _, u in pairs(units) do
+          if CHAT.call(unit, "alive", u) == true and CHAT.call(unit, "has_node", u, "attach_headlight") == true then
+            local root = CHAT.call(unit, "world_position", u, 1)
+            local d = root ~= nil and CHAT.call(vector, "distance", position, root) or nil
+            if type(d) == "number" and d == d and d >= 0 and d <= nearest then best, nearest = u, d end
+          end
+        end
+      end
+    end
+  end
+  CHAT.unit = best
+  if best == nil then
+    CHAT.wait = MOM.frame + CHAT.gap
+    CHAT.gap = CHAT.gap < 960 and CHAT.gap * 2 or 960
+  end
+  return best
+end
+-- Whether the chat box is open: false whenever it cannot be told (no
+-- session, no living body, no animation), so the key goes through.
+function CHAT.open()
+  local gs, net = CHAT.ns("GameSession"), CHAT.ns("Network")
+  local session, peer = CHAT.call(net, "game_session"), CHAT.call(net, "peer_id")
+  if session == nil or peer == nil then return false end
+  local avatar = CHAT.avatar(gs, session, peer)
+  if avatar == nil then return false end
+  local body = CHAT.body(gs, session, avatar)
+  local unit = CHAT.ns("Unit")
+  if body == nil or CHAT.call(unit, "has_animation_state_machine", body) ~= true then return false end
+  local f = type(unit) == "table" and rawget(unit, "animation_get_state") or nil
+  if type(f) ~= "function" then return false end
+  local ok, _, _, layer3, _, _, _, _, _, _, layer10 = pcall(f, body)
+  return ok == true and layer10 == CHAT.wrist and layer3 == CHAT.layer3
+end
+
+-- Whether a key may count this frame: the window has focus and the chat box
+-- is closed; asked at most once a frame.
+function MBB.allowed()
+  if MBB.guard_frame == MOM.frame then return MBB.guard_ok end
+  MBB.guard_frame = MOM.frame
+  local ok = true
+  local window = CHAT.ns("Window")
+  local f = type(window) == "table" and rawget(window, "has_focus") or nil
+  if type(f) == "function" then
+    local okf, focus = pcall(f)
+    if okf and focus == false then ok = false end
+  end
+  if ok then
+    local okc, open = pcall(CHAT.open)
+    if okc and open then
+      ok = false
+      if not MBB.said_chat then
+        MBB.said_chat = true
+        say("ModBindingsMenu: a key was held back while the chat box was open")
+      end
+    end
+  end
+  MBB.guard_ok = ok
+  return ok
+end
+
+function MBB.is_down(id)
+  local b = MBB.bindings[id]
+  if b == nil then return nil end
+  local name = MOM.values[id]
+  if name ~= b.name then b.name, b.resolved = name, MBB.resolve(name) end
+  if b.resolved == nil then return false end
+  local down = false
+  for _, button in ipairs(b.resolved) do
+    local f = rawget(button[1], b.how)
+    if type(f) == "function" then
+      local ok, v = pcall(f, button[2])
+      if ok and (v == true or (type(v) == "number" and v > 0.5)) then down = true break end
+    end
+  end
+  return down and MBB.allowed()
+end
+
+-- register_binding(id, label, slot, options): the menu's checks; any slot is
+-- taken (there are no native actions to share here).
+function MBB.register(id, label, slot, options)
+  if type(id) ~= "string" or id == "" or #id > 96 or string.find(id, "%c")
+     or (slot ~= nil and type(slot) ~= "number") or (options ~= nil and type(options) ~= "table") then
+    return false, "invalid binding registration"
+  end
+  options = options or {}
+  local text = type(label) == "number" and id or MOM.text(label, 127)
+  if text == nil then return false, "invalid binding registration" end
+  local category = nil
+  if options.category ~= nil then
+    category = MOM.text(options.category, 64)
+    if category == nil then return false, "invalid binding category" end
+  end
+  local had = MBB.bindings[id]
+  if had ~= nil then
+    if had.label == text and had.slot == slot then return true end
+    return false, "binding already registered differently"
+  end
+  local addon = MOM.caller()
+  local tail = addon and string.match(addon, "([%w_]+)$") or nil
+  if tail ~= nil and MOM.dir ~= nil and MOM.listed(tail, id) then
+    return false, "this key is in the mod's own list in the settings window"
+  end
+  local default, trigger = MBB.default(options.default)
+  local gkey = "mbm:" .. (addon or category or "?")
+  local g = MOM.groups[gkey]
+  if g == nil then
+    if #MOM.list >= MOM.MAX_MODS then return false, "all " .. MOM.MAX_MODS .. " mod categories are in use" end
+    local title = category or (tail and (string.gsub(tail, "_", " "))) or "Unnamed mod"
+    local base = string.match(string.gsub(string.lower(tail or title), "[^%w]+", "_"), "^_*(.-)_*$")
+    local name = "mbm_" .. (base ~= "" and base or "mod")
+    while MOM.names[name] do name = name .. "_" end
+    MOM.names[name] = true
+    g = { key = gkey, title = title, name = name, addon = addon, keys = true, options = {}, by_key = {}, dirty = true,
+          write = false, file_values = MOM.dir and MOM.read_values(MOM.dir .. name .. "_settings.txt") or {},
+          migrated = 0 }
+    MOM.groups[gkey] = g
+    MOM.list[#MOM.list + 1] = g
+  end
+  local key = string.gsub(id, "[^%w_]", "_")
+  while g.by_key[key] ~= nil do key = key .. "_" end
+  local o = { id = id, kind = "key", label = text, default = default, key = key, group = g }
+  g.options[#g.options + 1] = o
+  g.by_key[key] = o
+  MOM.options[id] = o
+  local v = MOM.decode(o, g.file_values[key])
+  if v == nil then v, g.write = default, true end
+  MOM.values[id] = v
+  MBB.bindings[id] = { label = text, slot = slot, trigger = trigger,
+                       how = trigger == "hold" and "button" or (trigger == "release" and "released" or "pressed") }
+  MBB.count = MBB.count + 1
+  MBB.api.revision = MBB.api.revision + 1
+  MBB.api.extended.count = MBB.count
+  g.dirty = true
+  L.hook_update()
+  return true
+end
+
+-- set_binding(id, spec): {} clears, nil restores the default.
+function MBB.set_binding(id, spec)
+  local b = MBB.bindings[id]
+  if b == nil then return false, "not an extended binding" end
+  local o = MOM.options[id]
+  local name
+  if spec == nil then name = o.default
+  elseif type(spec) == "table" and spec.button == nil and spec[1] == nil then name = ""
+  else
+    name = MBB.default(spec)
+    if name == "" then return false, "invalid binding" end
+  end
+  if MOM.values[id] ~= name then
+    MOM.values[id] = name
+    o.group.write = true
+  end
+  return true
+end
+
+MBB.api = {
+  api = 1, version = 4, capacity = 36, revision = 0, loader = MARKER, window = "HD2 Mod Setting GUI",
+  extended = { devices = { "keyboard", "mouse" }, triggers = { "press", "release", "hold" }, count = 0 },
+  register_binding = function(id, label, slot, options)
+    local ok, done, why = pcall(MBB.register, id, label, slot, options)
+    if not ok then return false, tostring(done) end
+    return done, why
+  end,
+  is_down = function(id) return MBB.is_down(id) end,
+  ready = function() return true end,
+  -- poll(ids, out): is_down for each, with press/release since this table's last poll
+  poll = function(ids, out)
+    if type(ids) ~= "table" or type(out) ~= "table" then return false, "invalid poll arguments" end
+    for _, field in ipairs({ "down", "pressed", "released", "last" }) do
+      if out[field] == nil then out[field] = {} elseif type(out[field]) ~= "table" then
+        return false, "invalid poll arguments"
+      end
+    end
+    for i = 1, #ids do
+      local down = MBB.is_down(ids[i])
+      local was = out.last[i] == true
+      out.down[i] = down
+      out.pressed[i] = down == true and not was
+      out.released[i] = was and down ~= true
+      out.last[i] = down == true
+    end
+    return true
+  end,
+  set_binding = function(id, spec) return MBB.set_binding(id, spec) end,
+  binding = function(id)
+    local b = MBB.bindings[id]
+    if b == nil then return nil end
+    local name = MOM.values[id]
+    if name == nil or name == "" then return {} end
+    local mouse = MBB.MOUSE[name] ~= nil
+    local button = name
+    if mouse then for k, v in pairs(MBB.FROM_MBM) do if v == name then button = k end end end
+    return { { mouse and "mouse" or "keyboard", button, modifiers = {}, trigger = b.trigger } }
+  end,
+  binding_info = function(id)
+    local b = MBB.bindings[id]
+    if b == nil then return nil end
+    local name, o = MOM.values[id], MOM.options[id]
+    return { backend = "extended", state = (name == "" and o.default ~= "") and "cleared"
+                                          or (name == o.default and "default" or "set") }
+  end,
+}
 
 if rawget(_G, "ModOptionsMenu") == nil then
   rawset(_G, "ModOptionsMenu", {
@@ -750,6 +1123,9 @@ if rawget(_G, "ModOptionsMenu") == nil then
     end,
     ready = function() return true end,
   })
+end
+if rawget(_G, "ModBindingsMenu") == nil then
+  rawset(_G, "ModBindingsMenu", MBB.api)
 end
 
 local function check_game_version()

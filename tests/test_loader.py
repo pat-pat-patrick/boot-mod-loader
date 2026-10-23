@@ -28,8 +28,9 @@ folder holds real patch archives built the way the mods' builders write them:
             the window's list and settings file appear; a value the window
             changes reaches get() and on_change once; a file without #end
             waits; set() from code writes the file; a late registration
-            hooks update then; with none, update is the game's own; a mod
-            with its own list for the window is refused (no second list)
+            hooks update then; with none, update is the game's own; a
+            setting the mod lists for the window itself is refused, one it
+            keeps only in the menu is listed (ActionCam 3.0's split)
 
     pip install lupa
     python tests/test_loader.py
@@ -136,7 +137,10 @@ CAM = ("-- HD2-Addon: mods/test/cam\n"
 
 
 NATIVE = ("-- HD2-Addon: mods/test/native\n"
-          "NATIVE_R = ModOptionsMenu.register_option('native.x', { type = 'toggle', label = 'X', mod = 'Native' })\n")
+          "local M = ModOptionsMenu\n"
+          "NATIVE_R = M.register_option('native.x', { type = 'toggle', label = 'X', mod = 'Native' })\n"
+          "NATIVE_U = M.register_option('native.unit.abc', { type = 'toggle', label = 'U', mod = 'Native' })\n"
+          "NATIVE_E = M.register_option('native.extra', { type = 'toggle', label = 'E', mod = 'Native' })\n")
 
 
 def check_options(source, failures):
@@ -146,7 +150,8 @@ def check_options(source, failures):
     late = tempfile.mkdtemp(prefix="bootloader_")
     try:
         fake_game(root, {1: ("mods/test/cam", CAM, 2), 2: ("mods/test/native", NATIVE, 2)})
-        open(os.path.join(root, "appdata", "Arrowhead", "Helldivers2", "native_options.json"), "w").write("{}")
+        open(os.path.join(root, "appdata", "Arrowhead", "Helldivers2", "native_options.json"), "w").write(
+            '{"options":[{"key":"x","type":"toggle"},{"key": "unit_abc","type":"toggle"},{"key":"profile_1"}]}')
         logs = os.path.join(root, "local", "CowboyBingus", "Helldivers2", "Logs")
         open(os.path.join(logs, "ModOptionsMenu.values"), "w", newline="\n").write("cam.fov\t4\ncam.on\ttrue\nother.x\t1\n")
         rt = runtime(root, CHECKED)
@@ -176,9 +181,14 @@ def check_options(source, failures):
         ok(text == "cam_on=true\ncam_mode=1\ncam_fov=4\n#end\n", "the settings file: %r" % text, failures)
         log = open(os.path.join(app, "boot_mod_loader.log"), encoding="utf-8").read()
         ok("2 value(s) carried over from Mod Options Menu" in log, "the carry-over is logged", failures)
-        ok(rt.eval("NATIVE_R") is False and not os.path.exists(os.path.join(app, "mom_native_options.json"))
-           and "native has its own list in the settings window" in log,
-           "a mod with its own window list is refused and not listed twice", failures)
+        native_list = os.path.join(app, "mom_native_options.json")
+        native_keys = [o["key"] for o in json.load(open(native_list, encoding="utf-8"))["options"]] \
+            if os.path.exists(native_list) else None
+        ok(rt.eval("NATIVE_R") is False and rt.eval("NATIVE_U") is False and rt.eval("NATIVE_E") is True
+           and native_keys == ["native_extra"]
+           and "native lists its settings in the settings window itself" in log,
+           "a setting in the mod's own window list is refused (x, unit.abc); one only in the menu is listed: %r"
+           % native_keys, failures)
 
         with open(settings, "w", newline="\n") as f:
             f.write("cam_on=false\ncam_mode=3\ncam_fov=7.3\n#end\n")

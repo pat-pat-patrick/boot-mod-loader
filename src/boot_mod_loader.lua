@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.3.0"
+local MARKER = "boot-mod-loader-0.3.1"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -439,19 +439,41 @@ function MOM.group(spec, addon)
   return g
 end
 
--- A mod that writes its own list for the window (<addon name>_options.json,
--- as every mod with mod_settings does) is refused: listed again here, its
--- settings would show twice, and it treats what the menu holds as greyed out
--- in its own list. Refused, it keeps its own list as without the menu.
+-- The keys of the list a mod writes for the window itself (<addon
+-- name>_options.json, as every mod with mod_settings does), read once;
+-- {} when it writes none.
 function MOM.native(tail)
-  local known = MOM.natives[tail]
-  if known ~= nil then return known end
+  local keys = MOM.natives[tail]
+  if keys ~= nil then return keys end
+  keys = {}
   local ok, f = pcall(io.open, MOM.dir .. tail .. "_options.json", "rb")
-  known = ok and f ~= nil
-  if known then pcall(f.close, f) end
-  MOM.natives[tail] = known
-  if known then say("ModOptionsMenu: " .. tail .. " has its own list in the settings window -- its options stay there") end
-  return known
+  if ok and f ~= nil then
+    local okr, text = pcall(f.read, f, "*a")
+    pcall(f.close, f)
+    if okr and type(text) == "string" then
+      for k in string.gmatch(text, '"key"%s*:%s*"([^"]*)"') do keys[k] = true end
+    end
+  end
+  MOM.natives[tail] = keys
+  return keys
+end
+
+-- A setting the mod already lists for the window itself is refused: listed
+-- again here it would show twice, and the mod greys out in its own list what
+-- the menu holds. It is that setting when a part of the id after a dot,
+-- written as a key (Super Beacon's "patpatpatrick.super_beacon.ammo_mode2" ->
+-- "ammo_mode2", Super Laser Sights Plus's "...plus.unit.37cde..." ->
+-- "unit_37cde..."), is one of the list's keys. Settings it keeps only in the
+-- menu (ActionCam 3.0: options in the menu, keys in its own list) are taken.
+function MOM.listed(tail, id)
+  local keys = MOM.native(tail)
+  if next(keys) == nil then return false end
+  local at = 0
+  repeat
+    if keys[(string.gsub(string.sub(id, at + 1), "[^%w_]", "_"))] then return true end
+    at = string.find(id, ".", at + 1, true)
+  until at == nil
+  return false
 end
 
 function MOM.register(id, spec)
@@ -459,8 +481,13 @@ function MOM.register(id, spec)
   if o == nil then return false, why end
   local addon = MOM.caller()
   local tail = addon and string.match(addon, "([%w_]+)$") or nil
-  if tail ~= nil and MOM.dir ~= nil and MOM.native(tail) then
-    return false, "this mod has its own list in the settings window"
+  if tail ~= nil and MOM.dir ~= nil and MOM.listed(tail, id) then
+    if not MOM.said_listed then MOM.said_listed = {} end
+    if not MOM.said_listed[tail] then
+      MOM.said_listed[tail] = true
+      say("ModOptionsMenu: " .. tail .. " lists its settings in the settings window itself -- those stay there")
+    end
+    return false, "this setting is in the mod's own list in the settings window"
   end
   local had = MOM.options[id]
   if had ~= nil then

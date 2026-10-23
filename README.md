@@ -104,8 +104,9 @@ in `%APPDATA%\Arrowhead\Helldivers2\`:
 
 The list names a mod's profile option as `"profile"`, for the window's profile
 switcher: an option registered with `profile = true` (an extra field the menu
-itself ignores), else a choice whose id ends in `.profile`; such a list also says
-`"profiles": true`, which lets the window offer its own saved sets of values. When the window
+itself ignores), else a choice whose id ends in `.profile`. A mod that registers
+any option with `profiles = true` (another extra field) gets `"profiles": true`,
+which lets the window offer its own saved sets of values; this is never inferred. When the window
 switches the profile, its file still holds the old profile's other values: the
 loader applies only the switch (the mod loads the new profile's values and
 `set()`s them) and writes the file back, so the old values are never saved

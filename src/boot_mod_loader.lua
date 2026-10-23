@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.3.4"
+local MARKER = "boot-mod-loader-0.3.5"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -511,6 +511,7 @@ function MOM.register(id, spec)
   end
   if v == nil then v = o.default end
   MOM.values[id] = v
+  if spec.profiles == true then g.profiles = true end   -- the mod asks for the window's own saved sets
   g.dirty = true
   L.hook_update()
   return true
@@ -583,11 +584,12 @@ function MOM.export(g)
     opts[#opts + 1] = e
   end
   -- profiles: the window offers its own saved sets of values only to a mod
-  -- that has profiles itself (the window's rule, 1.7.0); absent otherwise.
-  local profile = MOM.profile_key(g)
+  -- that asks for them itself, with profiles = true on any of its options
+  -- (an extension the menu ignores; the user, 10-24: never inferred, not
+  -- even from a profile option); absent otherwise.
   local text = MOM.json({ title = g.title, version = "", settings = g.name .. "_settings.txt", pages = MOM.NONE,
-                          options = opts, menu_owned = MOM.NONE, profile = profile,
-                          profiles = profile ~= nil or nil }) .. "\n"
+                          options = opts, menu_owned = MOM.NONE, profile = MOM.profile_key(g),
+                          profiles = g.profiles or nil }) .. "\n"
   local path = MOM.dir .. g.name .. "_options.json"
   local okr, f = pcall(io.open, path, "rb")
   if okr and f ~= nil then

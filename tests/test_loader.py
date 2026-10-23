@@ -32,8 +32,8 @@ folder holds real patch archives built the way the mods' builders write them:
             setting the mod lists for the window itself is refused, one it
             keeps only in the menu is listed (ActionCam 3.0's split); the
             list names the profile option (profile = true, else a choice
-            whose id ends .profile) and then "profiles": true, neither key
-            when there is none; a
+            whose id ends .profile); "profiles": true only when the mod
+            declares profiles = true itself, never inferred; a
             profile switch from the window applies only the switch (the
             file's other, old values are not applied) and writes back
 
@@ -146,7 +146,7 @@ NATIVE = ("-- HD2-Addon: mods/test/native\n"
           "NATIVE_R = M.register_option('native.x', { type = 'toggle', label = 'X', mod = 'Native' })\n"
           "NATIVE_U = M.register_option('native.unit.abc', { type = 'toggle', label = 'U', mod = 'Native' })\n"
           "NATIVE_E = M.register_option('native.extra', { type = 'toggle', label = 'E', mod = 'Native', "
-          "profile = true })\n")
+          "profile = true, profiles = true })\n")
 
 
 def check_options(source, failures):
@@ -245,7 +245,7 @@ def check_options(source, failures):
         rt2.execute("update(0.016)")
         app2 = os.path.join(late, "appdata", "Arrowhead", "Helldivers2")
         late_list = json.load(open(os.path.join(app2, "mom_late_options.json"), encoding="utf-8"))
-        ok(late_list.get("profile") == "late_profile" and late_list.get("profiles") is True,
+        ok(late_list.get("profile") == "late_profile" and "profiles" not in late_list,
            "and its list is written; a choice whose id ends .profile is the profile switcher: %r"
            % late_list.get("profile"), failures)
         late_file = os.path.join(app2, "mom_late_settings.txt")

@@ -1,0 +1,4 @@
+# The game's own boot bytecode: taken from your install, never committed.
+boot.luac
+dist/
+__pycache__/

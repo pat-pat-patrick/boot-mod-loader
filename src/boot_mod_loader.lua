@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.3.2"
+local MARKER = "boot-mod-loader-0.3.3"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -652,18 +652,36 @@ function MOM.tick_group(g)
   if not oks or not okr or type(text) ~= "string" or text == g.text then return end
   if not string.find(text, "\n#end%s*$") then return end            -- written half: the next read
   g.text = text
-  local changed = {}
+  -- What differs from the values before this read, all found before any
+  -- callback runs (a callback may set() other values).
+  local found, profile = {}, MOM.profile_key(g)
   for k, v in string.gmatch(text, "([^=\r\n]+)=([^\r\n]*)") do
     local o = g.by_key[k]
     local value = o and MOM.decode(o, v)
     if value ~= nil and MOM.values[o.id] ~= value then
-      MOM.values[o.id] = value
-      changed[#changed + 1] = k .. "=" .. MOM.encode(o, value)
-      for _, fn in ipairs(MOM.callbacks[o.id] or {}) do
-        local okc, err = pcall(fn, value, o.id)
-        if not okc then say("ModOptionsMenu: on_change of " .. o.id .. " failed: " .. tostring(err)) end
-      end
+      found[#found + 1] = { o = o, value = value }
+      if k == profile then found = { found[#found] } break end
     end
+  end
+  -- A profile switch from the window comes with the old profile's other
+  -- values in the same file: only the switch is applied, the mod loads the
+  -- new profile's own values (and set()s them), and the file is written
+  -- back with those for the window to show. Applying the old values too
+  -- would save them into the new profile.
+  if found[1] ~= nil and found[1].o.key == profile then g.write = true end
+  local changed = {}
+  for _, c in ipairs(found) do
+    local o, value = c.o, c.value
+    MOM.values[o.id] = value
+    changed[#changed + 1] = o.key .. "=" .. MOM.encode(o, value)
+    for _, fn in ipairs(MOM.callbacks[o.id] or {}) do
+      local okc, err = pcall(fn, value, o.id)
+      if not okc then say("ModOptionsMenu: on_change of " .. o.id .. " failed: " .. tostring(err)) end
+    end
+  end
+  if g.write then
+    g.write = false
+    MOM.write(g, path)
   end
   if #changed == 0 then return end
   local line = os.date("%H:%M:%S ") .. "settings window: applied " .. table.concat(changed, " ")

@@ -32,7 +32,9 @@ folder holds real patch archives built the way the mods' builders write them:
             setting the mod lists for the window itself is refused, one it
             keeps only in the menu is listed (ActionCam 3.0's split); the
             list names the profile option (profile = true, else a choice
-            whose id ends .profile) and no profile when there is none
+            whose id ends .profile) and no profile when there is none; a
+            profile switch from the window applies only the switch (the
+            file's other, old values are not applied) and writes back
 
     pip install lupa
     python tests/test_loader.py
@@ -129,7 +131,7 @@ CAM = ("-- HD2-Addon: mods/test/cam\n"
        "MENU_OK = M.api == 1 and M.version == 3 and M.ready() == true\n"
        "R1 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = false })\n"
        "R2 = M.register_option('cam.mode', { type = 'choice', mod = 'Cam Test', label = function() return 'Mode' end,\n"
-       "  choices = { 'A', 'B', 'C' }, default = 1, description = 'Which mode', profile = true })\n"
+       "  choices = { 'A', 'B', 'C' }, default = 1, description = 'Which mode' })\n"
        "R3 = M.register_option('cam.fov', { type = 'slider', label = 'FOV', mod = 'Cam Test', min = 0, max = 10, step = 0.5, default = 2 })\n"
        "R4 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = false })\n"
        "R5 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = true })\n"
@@ -142,7 +144,8 @@ NATIVE = ("-- HD2-Addon: mods/test/native\n"
           "local M = ModOptionsMenu\n"
           "NATIVE_R = M.register_option('native.x', { type = 'toggle', label = 'X', mod = 'Native' })\n"
           "NATIVE_U = M.register_option('native.unit.abc', { type = 'toggle', label = 'U', mod = 'Native' })\n"
-          "NATIVE_E = M.register_option('native.extra', { type = 'toggle', label = 'E', mod = 'Native' })\n")
+          "NATIVE_E = M.register_option('native.extra', { type = 'toggle', label = 'E', mod = 'Native', "
+          "profile = true })\n")
 
 
 def check_options(source, failures):
@@ -176,7 +179,7 @@ def check_options(source, failures):
            and by_key["cam_mode"]["en"] == ["Mode", "Which mode"]
            and by_key["cam_mode"]["choices"] == [["A", "A"], ["B", "B"], ["C", "C"]]
            and by_key["cam_fov"]["type"] == "slider" and by_key["cam_fov"]["step"] == 0.5
-           and listing["pages"] == [] and listing["menu_owned"] == [] and listing["profile"] == "cam_mode",
+           and listing["pages"] == [] and listing["menu_owned"] == [] and "profile" not in listing,
            "the window's list: %r" % listing, failures)
         settings = os.path.join(app, "mom_cam_settings.txt")
         text = open(settings, encoding="utf-8").read()
@@ -188,7 +191,7 @@ def check_options(source, failures):
             if os.path.exists(native_list) else None
         ok(rt.eval("NATIVE_R") is False and rt.eval("NATIVE_U") is False and rt.eval("NATIVE_E") is True
            and native_keys == ["native_extra"]
-           and "profile" not in json.load(open(native_list, encoding="utf-8"))
+           and json.load(open(native_list, encoding="utf-8")).get("profile") == "native_extra"
            and "native lists its settings in the settings window itself" in log,
            "a setting in the mod's own window list is refused (x, unit.abc); one only in the menu is listed: %r"
            % native_keys, failures)
@@ -226,8 +229,15 @@ def check_options(source, failures):
         ok(rt2.eval("rawequal(update, GAME_UPDATE)") is True, "no option at start: update is the game's own",
            failures)
         rt2.execute("ModOptionsMenu.register_option('late.x', { type = 'toggle', label = 'X', mod = 'Late' })")
-        rt2.execute("ModOptionsMenu.register_option('late.profile', { type = 'choice', label = 'P', mod = 'Late', "
-                    "choices = { 'One', 'Two' } })")
+        rt2.execute("local M = ModOptionsMenu\n"
+                    "M.register_option('late.profile', { type = 'choice', label = 'P', mod = 'Late', "
+                    "choices = { 'One', 'Two' } })\n"
+                    "M.register_option('late.dist', { type = 'slider', label = 'D', mod = 'Late', min = 0, max = 10, "
+                    "default = 0 })\n"
+                    "LATE = {}\n"
+                    "M.on_change('late.profile', function(v, id) LATE[#LATE + 1] = id .. '=' .. v "
+                    "M.set('late.dist', v * 3) end)\n"
+                    "M.on_change('late.dist', function(v, id) LATE[#LATE + 1] = id .. '=' .. v end)")
         ok(rt2.eval("rawequal(update, GAME_UPDATE)") is False, "a late registration hooks update then", failures)
         rt2.execute("update(0.016)")
         app2 = os.path.join(late, "appdata", "Arrowhead", "Helldivers2")
@@ -235,6 +245,23 @@ def check_options(source, failures):
         ok(late_list.get("profile") == "late_profile",
            "and its list is written; a choice whose id ends .profile is the profile switcher: %r"
            % late_list.get("profile"), failures)
+        late_file = os.path.join(app2, "mom_late_settings.txt")
+        with open(late_file, "w", newline="\n") as f:          # the window switches: new profile, old values
+            f.write("late_x=false\nlate_profile=2\nlate_dist=0\n#end\n")
+        for _ in range(3):
+            rt2.execute("update(0.5)")
+        text = open(late_file, encoding="utf-8").read()
+        ok(rt2.eval("table.concat(LATE, ' ')") == "late.profile=2" and rt2.eval("ModOptionsMenu.get('late.dist')") == 6
+           and "late_dist=6" in text and "late_profile=2" in text,
+           "a profile switch applies only the switch; the old value of another setting in the same file is not "
+           "applied, and the new profile's value is written back: %r %r" % (rt2.eval("table.concat(LATE, ' ')"), text),
+           failures)
+        with open(late_file, "w", newline="\n") as f:          # then an ordinary edit
+            f.write("late_x=false\nlate_profile=2\nlate_dist=4\n#end\n")
+        for _ in range(3):
+            rt2.execute("update(0.5)")
+        ok(rt2.eval("table.concat(LATE, ' ')") == "late.profile=2 late.dist=4",
+           "an ordinary edit after it applies: %r" % rt2.eval("table.concat(LATE, ' ')"), failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(late, ignore_errors=True)

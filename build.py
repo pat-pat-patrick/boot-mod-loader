@@ -9,6 +9,7 @@ the original still runs first, unchanged.
 """
 import json
 import os
+import shutil
 import struct
 import sys
 import zipfile
@@ -16,8 +17,9 @@ import zipfile
 HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "src", "boot_mod_loader.lua")
 BOOT = os.path.join(HERE, "boot.luac")
+ICON = os.path.join(HERE, "icon.png")       # the mod manager's icon, 1024 px
 DIST = os.path.join(HERE, "dist")
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 NAME = "Boot Mod Loader"
 FOLDER = "Boot Mod Loader"
 RESOURCE = "boot"
@@ -35,6 +37,7 @@ SCAFFOLD = bytes.fromhex(
 MANIFEST = {
     "Version": 1,
     "Guid": "3f7a2c91-6d4e-4b58-9a0c-e15b82d4f6a7",
+    "IconPath": "Boot Mod Loader.png",
     "Name": NAME,
     "Description": "Starts Lua mods (-- HD2-Addon:) on the game since its 2026-10-20 update; runs the game's own boot script unchanged.",
     "Options": [{
@@ -138,6 +141,7 @@ def build():
     with open(os.path.join(out_dir, "manifest.json"), "w", encoding="utf-8") as f:
         json.dump(MANIFEST, f, indent=2, ensure_ascii=False)
         f.write("\n")
+    shutil.copyfile(ICON, os.path.join(out_dir, MANIFEST["IconPath"]))     # the mod manager's icon
     with open(os.path.join(out_dir, "README.txt"), "w", encoding="utf-8", newline="\r\n") as f:
         f.write(README)
     zip_path = out_dir + ".zip"

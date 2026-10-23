@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.3.5"
+local MARKER = "boot-mod-loader-0.3.6"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -575,11 +575,13 @@ end
 function MOM.export(g)
   local opts = {}
   for _, o in ipairs(g.options) do
+    -- texts as plain strings (window 1.8.0); the menu's texts are in one
+    -- language, so there are no "translations"
     local e = { key = o.key, type = o.kind, default = o.default, min = o.min, max = o.max, step = o.step,
-                en = { o.label, o.description or "" }, zh = { o.label, o.description or "" } }
+                name = o.label, hint = o.description }
     if o.choices then
       e.choices = {}
-      for i, c in ipairs(o.choices) do e.choices[i] = { c, c } end
+      for i, c in ipairs(o.choices) do e.choices[i] = c end
     end
     opts[#opts + 1] = e
   end

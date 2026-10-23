@@ -177,8 +177,10 @@ def check_options(source, failures):
         by_key = {o["key"]: o for o in listing["options"]}
         ok(listing["title"] == "Cam Test" and listing["settings"] == "mom_cam_settings.txt"
            and sorted(by_key) == ["cam_fov", "cam_mode", "cam_on"]
-           and by_key["cam_mode"]["en"] == ["Mode", "Which mode"]
-           and by_key["cam_mode"]["choices"] == [["A", "A"], ["B", "B"], ["C", "C"]]
+           and by_key["cam_mode"]["name"] == "Mode" and by_key["cam_mode"]["hint"] == "Which mode"
+           and by_key["cam_mode"]["choices"] == ["A", "B", "C"]
+           and by_key["cam_on"]["name"] == "On" and "hint" not in by_key["cam_on"]
+           and not any("en" in o or "zh" in o for o in listing["options"]) and "translations" not in listing
            and by_key["cam_fov"]["type"] == "slider" and by_key["cam_fov"]["step"] == 0.5
            and listing["pages"] == [] and listing["menu_owned"] == [] and "profile" not in listing
            and "profiles" not in listing,

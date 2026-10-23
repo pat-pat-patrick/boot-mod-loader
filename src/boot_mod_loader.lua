@@ -17,10 +17,26 @@
 -- For mods written against Bingus Shared Loader it sets
 -- _G.CowboyBingusModLoader with the parts that need no ffi: api 1, open_log
 -- (io, in the loader's usual Logs folder), after_startup, capabilities; its
--- `revision` says it is this loader, not Bingus's.
+-- `revision` says it is this loader, not Bingus's. Beside after_startup it has
+-- on_shutdown(fn): run when the game quits, after every shutdown handler the
+-- mods installed while loading (for file swaps that must come last).
+--
+-- The game's boot is embedded, so a game update that changed it would leave
+-- this running a stale copy. The loader cannot read the game's own boot at
+-- run time (it sits in the compressed bundles), so it checks the game's
+-- Application.build_identifier against the builds whose boot was checked to
+-- be these bytes, and logs "NOT THIS GAME VERSION" on any other. Mods still
+-- start then: refusing would stop every mod at every hotfix, and boot has not
+-- changed in one so far.
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.1.0"
+local MARKER = "boot-mod-loader-0.2.0"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
+-- Builds whose boot script is byte for byte the one embedded here (extracted
+-- from each install and compared).
+local CHECKED_BUILDS = {
+  ["stingray:46539 987f283054819041dd1b28f29a21b5f339dbd106"] = "Steam build 25988413, 2026-10-20",
+  ["stingray:46659 e176252a3ac4eb5436b25e7cef665a8c71afa243"] = "Steam build 26088801, 2026-10-22",
+}
 
 if rawget(_G, "__boot_mod_loader") ~= nil then return end
 local L = { mods = {}, log_lines = {}, started = false }
@@ -159,6 +175,8 @@ end
 -- ------------------------------------------------------------ Bingus API, the ffi-free part
 
 local after_startup = {}
+local on_shutdown = {}
+local game = { build_identifier = nil, checked = false }
 local function loader_log_dir()
   local ok, dir = pcall(os.getenv, "LOCALAPPDATA")
   if ok and type(dir) == "string" then return dir .. "\\CowboyBingus\\Helldivers2\\Logs\\" end
@@ -167,7 +185,8 @@ end
 if rawget(_G, "CowboyBingusModLoader") == nil then
   rawset(_G, "CowboyBingusModLoader", {
     version = 17, api = 1, revision = MARKER,
-    capabilities = { after_startup = true, open_log = true, ffi = false, jit = false },
+    capabilities = { after_startup = true, on_shutdown = true, open_log = true, ffi = false, jit = false },
+    game = game,
     open_log = function(name)
       local dir = loader_log_dir()
       if dir == nil or type(name) ~= "string" then return nil end
@@ -178,7 +197,59 @@ if rawget(_G, "CowboyBingusModLoader") == nil then
     after_startup = function(fn)
       if type(fn) == "function" then after_startup[#after_startup + 1] = fn end
     end,
+    on_shutdown = function(fn)
+      if type(fn) ~= "function" then return end
+      on_shutdown[#on_shutdown + 1] = fn
+      if L.started_done then L.hook_shutdown() end                       -- registered late: hook now
+    end,
   })
+end
+
+local function pack(...) return { n = select("#", ...), ... } end
+
+-- The game's shutdown, wrapped once and only when a mod asked: whatever the
+-- shutdown chain was when the mods had loaded runs first, then each
+-- on_shutdown function in turn. An error in the chain is raised again after
+-- them, as it would have been.
+function L.hook_shutdown()
+  if L.shutdown_hooked or #on_shutdown == 0 then return end
+  L.shutdown_hooked = true
+  local previous = rawget(_G, "shutdown")
+  rawset(_G, "shutdown", function(...)
+    local results, failed = { n = 0 }, nil
+    if type(previous) == "function" then
+      local r = pack(pcall(previous, ...))
+      if r[1] then results = { n = r.n - 1, unpack(r, 2, r.n) } else failed = r[2] end
+    end
+    for i, fn in ipairs(on_shutdown) do
+      local ran, why = pcall(fn)
+      if not ran then say("on_shutdown " .. i .. ": " .. tostring(why)) end
+    end
+    say(string.format("shutdown: %d on_shutdown function(s) ran", #on_shutdown))
+    flush()
+    if failed ~= nil then error(failed, 0) end
+    return unpack(results, 1, results.n)
+  end)
+end
+
+local function check_game_version()
+  local engine = rawget(_G, "stingray") or rawget(_G, "s3d")
+  local ok, id = pcall(function() return engine.Application.build_identifier() end)
+  if not ok or type(id) ~= "string" then
+    say("game version: unknown (no Application.build_identifier)")
+    return
+  end
+  game.build_identifier = id
+  game.checked = CHECKED_BUILDS[id] ~= nil
+  if game.checked then
+    say("game version: " .. id .. " (" .. CHECKED_BUILDS[id] .. ")")
+    return
+  end
+  local names = {}
+  for _, name in pairs(CHECKED_BUILDS) do names[#names + 1] = name end
+  table.sort(names)
+  say("NOT THIS GAME VERSION: " .. id .. ". The game's boot script embedded in this loader was checked on "
+    .. table.concat(names, " and ") .. " only. Mods still start; if the game misbehaves, update Boot Mod Loader.")
 end
 
 -- ------------------------------------------------------------ running them
@@ -232,6 +303,7 @@ local function start()
     return
   end
   L.mods = list
+  check_game_version()
   flush()
   for _, entry in ipairs(list) do
     run(entry)
@@ -244,13 +316,14 @@ local function start()
   local loaded = 0
   for _, entry in ipairs(list) do if entry.state == "loaded" then loaded = loaded + 1 end end
   say(string.format("started %d of %d mods in %.0f ms", loaded, #list, (os.clock() - clock0) * 1000))
+  L.started_done = true
+  L.hook_shutdown()
   flush()
 end
 
 -- The mods start when the engine calls init (as under Bingus Shared Loader:
 -- update and shutdown exist by then and can be wrapped).
 local game_init = rawget(_G, "init")
-local function pack(...) return { n = select("#", ...), ... } end
 rawset(_G, "init", function(...)
   local results = { n = 0 }
   if type(game_init) == "function" then results = pack(game_init(...)) end

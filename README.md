@@ -28,6 +28,11 @@ use. It needs no settings.
   compile, or failed (with a traceback).
 - **Only one mod can replace `boot`.** Do not install a second loader that does
   the same.
+- After a game update the log says either `game version: ... (Steam build
+  ...)` or `NOT THIS GAME VERSION`. The second means the loader's copy of the
+  game's `boot` script was not checked on that build. Mods still start, because
+  `boot` has not changed in an update so far. If the game misbehaves, update
+  the loader.
 - A mod written for LuaJIT does not run on this game, loader or not. That
   includes mods that use `ffi` to read game memory, mods that use the `bit`
   library, and mods that use `goto`. The log says which mods failed and why.
@@ -58,7 +63,17 @@ Mods start inside the engine's `init`, just as under Bingus Shared Loader.
 - `open_log(name)`, which opens a file in
   `%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\` with `io`;
 - `after_startup(fn)`;
-- `capabilities`.
+- `on_shutdown(fn)`, which runs `fn` when the game quits, after every
+  shutdown handler that mods installed while loading. It is meant for work
+  that must come last, such as swapping files. Each function runs under
+  `pcall`; an error in the game's own shutdown is raised again after them;
+- `capabilities` (`after_startup`, `on_shutdown`, `open_log`; `ffi` and `jit`
+  are false);
+- `game`: `build_identifier`, the game's `Application.build_identifier()`,
+  and `checked`, true on a build whose `boot` this loader was checked on.
+
+Each mod's return value (or `true`) is stored in `package.loaded["mods/<author>/<name>"]`,
+so mods can check for each other.
 
 Its `revision` names this loader. It is set only if no other loader has set it.
 
@@ -73,7 +88,9 @@ game, so it is not in this repository. Take it from your own install:
     python build.py
 
 `build.py` writes `dist/Boot Mod Loader v<version>.zip`. Run
-`extract_boot.py` again after a game update.
+`extract_boot.py` again after a game update. If the game's `boot` is
+unchanged, add the build's `Application.build_identifier()` to
+`CHECKED_BUILDS` in `src/boot_mod_loader.lua`.
 
 `tests/test_loader.py` runs the loader on PUC Lua 5.1, the language the game
 runs, against a fake game folder of real patch archives. It covers these cases:
@@ -86,7 +103,9 @@ runs, against a fake game folder of real patch archives. It covers these cases:
 - a file that is not an archive;
 - a missing patch number;
 - the Bingus API;
-- `init` called twice.
+- `init` called twice;
+- `on_shutdown` order, a failing callback, and an error in the game's shutdown;
+- a checked and an unknown game version.
 
 ## Credits
 

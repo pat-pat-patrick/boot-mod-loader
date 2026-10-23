@@ -33,6 +33,11 @@ use. It needs no settings.
   game's `boot` script was not checked on that build. Mods still start, because
   `boot` has not changed in an update so far. If the game misbehaves, update
   the loader.
+- **Settings of mods made for Mod Options Menu.** That menu's in-game tab is
+  gone with the update. The loader takes its place: those mods' settings show in
+  [HD2 Mod Setting GUI](https://github.com/pat-pat-patrick/hd2-mod-setting-gui),
+  a small window outside the game, and a change applies in the game within a
+  second. Settings you had made in Mod Options Menu carry over.
 - A mod written for LuaJIT does not run on this game, loader or not. That
   includes mods that use `ffi` to read game memory, mods that use the `bit`
   library, and mods that use `goto`. The log says which mods failed and why.
@@ -67,15 +72,41 @@ Mods start inside the engine's `init`, just as under Bingus Shared Loader.
   shutdown handler that mods installed while loading. It is meant for work
   that must come last, such as swapping files. Each function runs under
   `pcall`; an error in the game's own shutdown is raised again after them;
-- `capabilities` (`after_startup`, `on_shutdown`, `open_log`; `ffi` and `jit`
-  are false);
+- `capabilities` (`after_startup`, `on_shutdown`, `open_log`, `mod_options`;
+  `ffi` and `jit` are false);
 - `game`: `build_identifier`, the game's `Application.build_identifier()`,
   and `checked`, true on a build whose `boot` this loader was checked on.
+
+Its `revision` names this loader. It is set only if no other loader has set it.
 
 Each mod's return value (or `true`) is stored in `package.loaded["mods/<author>/<name>"]`,
 so mods can check for each other.
 
-Its `revision` names this loader. It is set only if no other loader has set it.
+### Mod Options Menu
+
+When no other mod defines it, the loader sets `_G.ModOptionsMenu` before any
+mod loads, with the API of Mod Options Menu v1.2 (`api = 1`, `version = 3`):
+`register_option(id, spec)`, `get(id)`, `set(id, value)`, `on_change(id, fn)`
+and `ready()`, which is true. Registrations are checked by the menu's rules
+and limits (toggle, choice and slider; texts may be functions; 32 options a
+mod).
+
+Instead of an in-game tab, each mod's options become a list for
+[HD2 Mod Setting GUI](https://github.com/pat-pat-patrick/hd2-mod-setting-gui),
+in `%APPDATA%\Arrowhead\Helldivers2\`:
+
+- `mom_<mod>_options.json`: the list, written when it changes. `<mod>` is the
+  `mod_id`, else the addon's name.
+- `mom_<mod>_settings.txt`: the values. The window writes it whole; the loader
+  reads it once a second, and each value it changed goes to the mod's
+  `on_change` callbacks, as the menu's apply did.
+- `mom_<mod>.log`: a line for each change applied, for the window's status line.
+
+A value the window has not set yet comes from Mod Options Menu's own saved
+values (`%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\ModOptionsMenu.values`).
+A mod that already writes its own list for the window (`<addon name>_options.json`)
+is refused, so its settings are not listed twice. Nothing is hooked or read
+until a mod registers an option.
 
 ## Building
 
@@ -105,7 +136,10 @@ runs, against a fake game folder of real patch archives. It covers these cases:
 - the Bingus API;
 - `init` called twice;
 - `on_shutdown` order, a failing callback, and an error in the game's shutdown;
-- a checked and an unknown game version.
+- a checked and an unknown game version;
+- the Mod Options Menu look-alike: registration checks, carried-over values,
+  the window's files, a change from the window, a half-written file, `set()`,
+  a late registration, and a mod with its own list.
 
 ## Credits
 

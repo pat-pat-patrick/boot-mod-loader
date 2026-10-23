@@ -22,6 +22,14 @@ folder holds real patch archives built the way the mods' builders write them:
   version   a checked build_identifier is named in the log; an unknown one
             logs NOT THIS GAME VERSION and the mods still start; with no
             on_shutdown registered, shutdown is left as the game's own
+  options   ModOptionsMenu look-alike: a mod registers a toggle, a choice
+            (its label a function) and a slider; the menu's checks refuse a
+            bad one; values from the old ModOptionsMenu.values carry over;
+            the window's list and settings file appear; a value the window
+            changes reaches get() and on_change once; a file without #end
+            waits; set() from code writes the file; a late registration
+            hooks update then; with none, update is the game's own; a mod
+            with its own list for the window is refused (no second list)
 
     pip install lupa
     python tests/test_loader.py
@@ -55,7 +63,8 @@ MODS = {
     6: ("mods/test/alpha", "-- HD2-Addon: mods/test/alpha\nALPHA_RAN = (ALPHA_RAN or 0) + 1\nALPHA_V = 2\n"
                            "local prev = rawget(_G, 'update')\n"
                            "rawset(_G, 'update', function(...) UPDATES = (UPDATES or 0) + 1 "
-                           "if prev then return prev(...) end end)\n", 2),
+                           "if prev then return prev(...) end end)\n"
+                           "ALPHA_UPDATE = rawget(_G, 'update')\n", 2),
     7: ("mods/test/bingus", "-- HD2-Addon: mods/test/bingus\n"
                             "local L = rawget(_G, 'CowboyBingusModLoader')\n"
                             "BINGUS_API = L and L.api\n"
@@ -105,8 +114,112 @@ def runtime(root, build_id):
     rt.execute("init = function() GAME_INITS = (GAME_INITS or 0) + 1 return 'game', 7 end")
     rt.execute("ORDER = ''\n"
                "shutdown = function() ORDER = ORDER .. 'game,' if SHUTDOWN_RAISES then error('boom', 0) end end\n"
-               "GAME_SHUTDOWN = shutdown")
+               "GAME_SHUTDOWN = shutdown\n"
+               "update = function() end GAME_UPDATE = update")
     return rt
+
+
+CAM = ("-- HD2-Addon: mods/test/cam\n"
+       "local M = rawget(_G, 'ModOptionsMenu')\n"
+       "CHANGES = {}\n"
+       "local function seen(v, id) CHANGES[#CHANGES + 1] = id .. '=' .. tostring(v) end\n"
+       "MENU_OK = M.api == 1 and M.version == 3 and M.ready() == true\n"
+       "R1 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = false })\n"
+       "R2 = M.register_option('cam.mode', { type = 'choice', mod = 'Cam Test', label = function() return 'Mode' end,\n"
+       "  choices = { 'A', 'B', 'C' }, default = 1, description = 'Which mode' })\n"
+       "R3 = M.register_option('cam.fov', { type = 'slider', label = 'FOV', mod = 'Cam Test', min = 0, max = 10, step = 0.5, default = 2 })\n"
+       "R4 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = false })\n"
+       "R5 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = true })\n"
+       "R6 = M.register_option('cam.bad', { type = 'choice', label = 'Bad', mod = 'Cam Test', choices = { 'only' } })\n"
+       "for _, id in ipairs({ 'cam.on', 'cam.mode', 'cam.fov' }) do M.on_change(id, seen) end\n"
+       "START = { M.get('cam.on'), M.get('cam.mode'), M.get('cam.fov') }\n")
+
+
+NATIVE = ("-- HD2-Addon: mods/test/native\n"
+          "NATIVE_R = ModOptionsMenu.register_option('native.x', { type = 'toggle', label = 'X', mod = 'Native' })\n")
+
+
+def check_options(source, failures):
+    """The ModOptionsMenu look-alike and the settings window's files."""
+    import json
+    root = tempfile.mkdtemp(prefix="bootloader_")
+    late = tempfile.mkdtemp(prefix="bootloader_")
+    try:
+        fake_game(root, {1: ("mods/test/cam", CAM, 2), 2: ("mods/test/native", NATIVE, 2)})
+        open(os.path.join(root, "appdata", "Arrowhead", "Helldivers2", "native_options.json"), "w").write("{}")
+        logs = os.path.join(root, "local", "CowboyBingus", "Helldivers2", "Logs")
+        open(os.path.join(logs, "ModOptionsMenu.values"), "w", newline="\n").write("cam.fov\t4\ncam.on\ttrue\nother.x\t1\n")
+        rt = runtime(root, CHECKED)
+        rt.eval("loadstring")(source, "=boot")()
+        ok(rt.eval("ModOptionsMenu.revision") is not None, "the look-alike is there before the mods load", failures)
+        rt.execute("init()")
+        ok(rt.eval("MENU_OK") is True, "api 1, version 3, ready() true", failures)
+        ok(rt.eval("R1 and R2 and R3 and R4") is True and rt.eval("R5") is False and rt.eval("R6") is False,
+           "valid options registered; the same one again is true, a different one and a bad one are refused",
+           failures)
+        start = rt.eval("table.concat({ tostring(START[1]), tostring(START[2]), tostring(START[3]) }, ',')")
+        ok(start == "true,1,4", "old ModOptionsMenu.values carried over at registration: %r" % start, failures)
+        ok(rt.eval("rawequal(update, GAME_UPDATE)") is False, "update hooked once an option is registered", failures)
+        rt.execute("update(0.016)")
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+        listing = json.load(open(os.path.join(app, "mom_cam_options.json"), encoding="utf-8"))
+        by_key = {o["key"]: o for o in listing["options"]}
+        ok(listing["title"] == "Cam Test" and listing["settings"] == "mom_cam_settings.txt"
+           and sorted(by_key) == ["cam_fov", "cam_mode", "cam_on"]
+           and by_key["cam_mode"]["en"] == ["Mode", "Which mode"]
+           and by_key["cam_mode"]["choices"] == [["A", "A"], ["B", "B"], ["C", "C"]]
+           and by_key["cam_fov"]["type"] == "slider" and by_key["cam_fov"]["step"] == 0.5
+           and listing["pages"] == [] and listing["menu_owned"] == [],
+           "the window's list: %r" % listing, failures)
+        settings = os.path.join(app, "mom_cam_settings.txt")
+        text = open(settings, encoding="utf-8").read()
+        ok(text == "cam_on=true\ncam_mode=1\ncam_fov=4\n#end\n", "the settings file: %r" % text, failures)
+        log = open(os.path.join(app, "boot_mod_loader.log"), encoding="utf-8").read()
+        ok("2 value(s) carried over from Mod Options Menu" in log, "the carry-over is logged", failures)
+        ok(rt.eval("NATIVE_R") is False and not os.path.exists(os.path.join(app, "mom_native_options.json"))
+           and "native has its own list in the settings window" in log,
+           "a mod with its own window list is refused and not listed twice", failures)
+
+        with open(settings, "w", newline="\n") as f:
+            f.write("cam_on=false\ncam_mode=3\ncam_fov=7.3\n#end\n")
+        for _ in range(3):
+            rt.execute("update(0.5)")
+        now = rt.eval("table.concat({ tostring(ModOptionsMenu.get('cam.on')), ModOptionsMenu.get('cam.mode'), "
+                      "ModOptionsMenu.get('cam.fov') }, ',')")
+        changes = rt.eval("table.concat(CHANGES, ' ')")
+        ok(now == "false,3,7.5", "the window's values reach get() (7.3 snapped to 7.5): %r" % now, failures)
+        ok(changes == "cam.on=false cam.mode=3 cam.fov=7.5", "on_change once each: %r" % changes, failures)
+        mod_log = open(os.path.join(app, "mom_cam.log"), encoding="utf-8").read()
+        ok("settings window: applied cam_on=false cam_mode=3 cam_fov=7.5" in mod_log and mod_log[2] == ":",
+           "the window's status line finds the applied line: %r" % mod_log, failures)
+
+        with open(settings, "w", newline="\n") as f:
+            f.write("cam_on=true\n")
+        for _ in range(3):
+            rt.execute("update(0.5)")
+        ok(rt.eval("ModOptionsMenu.get('cam.on')") is False, "a file without #end is not read", failures)
+
+        rt.execute("ModOptionsMenu.set('cam.mode', 2)")
+        for _ in range(3):
+            rt.execute("update(0.5)")
+        text = open(settings, encoding="utf-8").read()
+        ok("cam_mode=2" in text and text.endswith("#end\n") and rt.eval("#CHANGES") == 3,
+           "set() writes the file and calls no on_change: %r" % text, failures)
+
+        fake_game(late, {1: MODS[1]})
+        rt2 = runtime(late, CHECKED)
+        rt2.eval("loadstring")(source, "=boot")()
+        rt2.execute("init()")
+        ok(rt2.eval("rawequal(update, GAME_UPDATE)") is True, "no option at start: update is the game's own",
+           failures)
+        rt2.execute("ModOptionsMenu.register_option('late.x', { type = 'toggle', label = 'X', mod = 'Late' })")
+        ok(rt2.eval("rawequal(update, GAME_UPDATE)") is False, "a late registration hooks update then", failures)
+        rt2.execute("update(0.016)")
+        app2 = os.path.join(late, "appdata", "Arrowhead", "Helldivers2")
+        ok(os.path.exists(os.path.join(app2, "mom_late_options.json")), "and its list is written", failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+        shutil.rmtree(late, ignore_errors=True)
 
 
 def check(source):
@@ -178,6 +291,8 @@ def check(source):
            and rt2.eval("CowboyBingusModLoader.game.checked") is False,
            "an unknown build is logged and the mods still start", failures)
         ok(rt2.eval("rawequal(shutdown, GAME_SHUTDOWN)") is True, "no on_shutdown: shutdown left alone", failures)
+        ok(rt2.eval("rawequal(update, GAME_UPDATE)") is True, "no option registered: update left alone", failures)
+        check_options(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

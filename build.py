@@ -17,7 +17,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SOURCE = os.path.join(HERE, "src", "boot_mod_loader.lua")
 BOOT = os.path.join(HERE, "boot.luac")
 DIST = os.path.join(HERE, "dist")
-VERSION = "0.2.0"
+VERSION = "0.3.0"
 NAME = "Boot Mod Loader"
 FOLDER = "Boot Mod Loader"
 RESOURCE = "boot"
@@ -58,6 +58,8 @@ Only one mod can replace `boot`: do not install another loader that does.
 Mods written for LuaJIT (ffi, bit, goto, jit) do not work on this game.
 On a game build it was not checked on, the log says NOT THIS GAME VERSION;
 mods still start.
+Mods made for Mod Options Menu: their settings show in HD2 Mod Setting GUI
+(github.com/pat-pat-patrick/hd2-mod-setting-gui), outside the game.
 Source: https://github.com/pat-pat-patrick/boot-mod-loader (MIT)
 """.format(version=VERSION)
 

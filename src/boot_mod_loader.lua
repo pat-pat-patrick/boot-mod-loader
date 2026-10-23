@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.3.1"
+local MARKER = "boot-mod-loader-0.3.2"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -316,7 +316,7 @@ function MOM.option(id, spec)
   if type(id) ~= "string" or id == "" or #id > 96 or string.find(id, "%c") or type(spec) ~= "table" then
     return nil, "invalid option registration"
   end
-  local o = { id = id, kind = spec.type, label = MOM.text(spec.label, 64) }
+  local o = { id = id, kind = spec.type, label = MOM.text(spec.label, 64), profile = spec.profile == true }
   if o.label == nil then return nil, "invalid option registration" end
   if spec.description ~= nil then
     o.description = MOM.text(spec.description, 400)
@@ -556,6 +556,20 @@ function MOM.json(v)
   return "null"
 end
 
+-- The option that switches a mod's profiles, for the window's profile
+-- switcher ("profile" in the list): one registered with profile = true (an
+-- extension the menu itself ignores), else a choice whose id ends ".profile"
+-- (ActionCam 3.0's actioncam.profile).
+function MOM.profile_key(g)
+  for _, o in ipairs(g.options) do
+    if o.profile then return o.key end
+  end
+  for _, o in ipairs(g.options) do
+    if o.kind == "choice" and string.match(o.id, "([^%.]+)$") == "profile" then return o.key end
+  end
+  return nil
+end
+
 -- The window's list for a mod, written only when it differs.
 function MOM.export(g)
   local opts = {}
@@ -569,7 +583,7 @@ function MOM.export(g)
     opts[#opts + 1] = e
   end
   local text = MOM.json({ title = g.title, version = "", settings = g.name .. "_settings.txt", pages = MOM.NONE,
-                          options = opts, menu_owned = MOM.NONE }) .. "\n"
+                          options = opts, menu_owned = MOM.NONE, profile = MOM.profile_key(g) }) .. "\n"
   local path = MOM.dir .. g.name .. "_options.json"
   local okr, f = pcall(io.open, path, "rb")
   if okr and f ~= nil then

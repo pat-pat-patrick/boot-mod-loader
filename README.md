@@ -102,6 +102,10 @@ in `%APPDATA%\Arrowhead\Helldivers2\`:
   `on_change` callbacks, as the menu's apply did.
 - `mom_<mod>.log`: a line for each change applied, for the window's status line.
 
+The list names a mod's profile option as `"profile"`, for the window's profile
+switcher: an option registered with `profile = true` (an extra field the menu
+itself ignores), else a choice whose id ends in `.profile`.
+
 A value the window has not set yet comes from Mod Options Menu's own saved
 values (`%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\ModOptionsMenu.values`).
 A mod that already writes its own list for the window (`<addon name>_options.json`)

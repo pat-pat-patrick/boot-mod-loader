@@ -30,7 +30,9 @@ folder holds real patch archives built the way the mods' builders write them:
             waits; set() from code writes the file; a late registration
             hooks update then; with none, update is the game's own; a
             setting the mod lists for the window itself is refused, one it
-            keeps only in the menu is listed (ActionCam 3.0's split)
+            keeps only in the menu is listed (ActionCam 3.0's split); the
+            list names the profile option (profile = true, else a choice
+            whose id ends .profile) and no profile when there is none
 
     pip install lupa
     python tests/test_loader.py
@@ -127,7 +129,7 @@ CAM = ("-- HD2-Addon: mods/test/cam\n"
        "MENU_OK = M.api == 1 and M.version == 3 and M.ready() == true\n"
        "R1 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = false })\n"
        "R2 = M.register_option('cam.mode', { type = 'choice', mod = 'Cam Test', label = function() return 'Mode' end,\n"
-       "  choices = { 'A', 'B', 'C' }, default = 1, description = 'Which mode' })\n"
+       "  choices = { 'A', 'B', 'C' }, default = 1, description = 'Which mode', profile = true })\n"
        "R3 = M.register_option('cam.fov', { type = 'slider', label = 'FOV', mod = 'Cam Test', min = 0, max = 10, step = 0.5, default = 2 })\n"
        "R4 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = false })\n"
        "R5 = M.register_option('cam.on', { type = 'toggle', label = 'On', mod = 'Cam Test', default = true })\n"
@@ -174,7 +176,7 @@ def check_options(source, failures):
            and by_key["cam_mode"]["en"] == ["Mode", "Which mode"]
            and by_key["cam_mode"]["choices"] == [["A", "A"], ["B", "B"], ["C", "C"]]
            and by_key["cam_fov"]["type"] == "slider" and by_key["cam_fov"]["step"] == 0.5
-           and listing["pages"] == [] and listing["menu_owned"] == [],
+           and listing["pages"] == [] and listing["menu_owned"] == [] and listing["profile"] == "cam_mode",
            "the window's list: %r" % listing, failures)
         settings = os.path.join(app, "mom_cam_settings.txt")
         text = open(settings, encoding="utf-8").read()
@@ -186,6 +188,7 @@ def check_options(source, failures):
             if os.path.exists(native_list) else None
         ok(rt.eval("NATIVE_R") is False and rt.eval("NATIVE_U") is False and rt.eval("NATIVE_E") is True
            and native_keys == ["native_extra"]
+           and "profile" not in json.load(open(native_list, encoding="utf-8"))
            and "native lists its settings in the settings window itself" in log,
            "a setting in the mod's own window list is refused (x, unit.abc); one only in the menu is listed: %r"
            % native_keys, failures)
@@ -223,10 +226,15 @@ def check_options(source, failures):
         ok(rt2.eval("rawequal(update, GAME_UPDATE)") is True, "no option at start: update is the game's own",
            failures)
         rt2.execute("ModOptionsMenu.register_option('late.x', { type = 'toggle', label = 'X', mod = 'Late' })")
+        rt2.execute("ModOptionsMenu.register_option('late.profile', { type = 'choice', label = 'P', mod = 'Late', "
+                    "choices = { 'One', 'Two' } })")
         ok(rt2.eval("rawequal(update, GAME_UPDATE)") is False, "a late registration hooks update then", failures)
         rt2.execute("update(0.016)")
         app2 = os.path.join(late, "appdata", "Arrowhead", "Helldivers2")
-        ok(os.path.exists(os.path.join(app2, "mom_late_options.json")), "and its list is written", failures)
+        late_list = json.load(open(os.path.join(app2, "mom_late_options.json"), encoding="utf-8"))
+        ok(late_list.get("profile") == "late_profile",
+           "and its list is written; a choice whose id ends .profile is the profile switcher: %r"
+           % late_list.get("profile"), failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(late, ignore_errors=True)

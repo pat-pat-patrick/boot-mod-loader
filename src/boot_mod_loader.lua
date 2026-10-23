@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.3.3"
+local MARKER = "boot-mod-loader-0.3.4"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -582,8 +582,12 @@ function MOM.export(g)
     end
     opts[#opts + 1] = e
   end
+  -- profiles: the window offers its own saved sets of values only to a mod
+  -- that has profiles itself (the window's rule, 1.7.0); absent otherwise.
+  local profile = MOM.profile_key(g)
   local text = MOM.json({ title = g.title, version = "", settings = g.name .. "_settings.txt", pages = MOM.NONE,
-                          options = opts, menu_owned = MOM.NONE, profile = MOM.profile_key(g) }) .. "\n"
+                          options = opts, menu_owned = MOM.NONE, profile = profile,
+                          profiles = profile ~= nil or nil }) .. "\n"
   local path = MOM.dir .. g.name .. "_options.json"
   local okr, f = pcall(io.open, path, "rb")
   if okr and f ~= nil then

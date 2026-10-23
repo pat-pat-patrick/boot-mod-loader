@@ -32,7 +32,8 @@ folder holds real patch archives built the way the mods' builders write them:
             setting the mod lists for the window itself is refused, one it
             keeps only in the menu is listed (ActionCam 3.0's split); the
             list names the profile option (profile = true, else a choice
-            whose id ends .profile) and no profile when there is none; a
+            whose id ends .profile) and then "profiles": true, neither key
+            when there is none; a
             profile switch from the window applies only the switch (the
             file's other, old values are not applied) and writes back
 
@@ -179,7 +180,8 @@ def check_options(source, failures):
            and by_key["cam_mode"]["en"] == ["Mode", "Which mode"]
            and by_key["cam_mode"]["choices"] == [["A", "A"], ["B", "B"], ["C", "C"]]
            and by_key["cam_fov"]["type"] == "slider" and by_key["cam_fov"]["step"] == 0.5
-           and listing["pages"] == [] and listing["menu_owned"] == [] and "profile" not in listing,
+           and listing["pages"] == [] and listing["menu_owned"] == [] and "profile" not in listing
+           and "profiles" not in listing,
            "the window's list: %r" % listing, failures)
         settings = os.path.join(app, "mom_cam_settings.txt")
         text = open(settings, encoding="utf-8").read()
@@ -192,6 +194,7 @@ def check_options(source, failures):
         ok(rt.eval("NATIVE_R") is False and rt.eval("NATIVE_U") is False and rt.eval("NATIVE_E") is True
            and native_keys == ["native_extra"]
            and json.load(open(native_list, encoding="utf-8")).get("profile") == "native_extra"
+           and json.load(open(native_list, encoding="utf-8")).get("profiles") is True
            and "native lists its settings in the settings window itself" in log,
            "a setting in the mod's own window list is refused (x, unit.abc); one only in the menu is listed: %r"
            % native_keys, failures)
@@ -242,7 +245,7 @@ def check_options(source, failures):
         rt2.execute("update(0.016)")
         app2 = os.path.join(late, "appdata", "Arrowhead", "Helldivers2")
         late_list = json.load(open(os.path.join(app2, "mom_late_options.json"), encoding="utf-8"))
-        ok(late_list.get("profile") == "late_profile",
+        ok(late_list.get("profile") == "late_profile" and late_list.get("profiles") is True,
            "and its list is written; a choice whose id ends .profile is the profile switcher: %r"
            % late_list.get("profile"), failures)
         late_file = os.path.join(app2, "mom_late_settings.txt")

@@ -93,8 +93,11 @@ When no other mod defines it, the loader sets `_G.ModOptionsMenu` before any
 mod loads, with the API of Mod Options Menu v1.2 (`api = 1`, `version = 3`):
 `register_option(id, spec)`, `get(id)`, `set(id, value)`, `on_change(id, fn)`
 and `ready()`, which is true. Registrations are checked by the menu's rules
-and limits (toggle, choice and slider; texts may be functions; 32 options a
-mod).
+(toggle, choice and slider; texts may be functions). The menu's tab limits
+(32 options a mod, 112 mods, Mod Bindings Menu's 36 slots) do not apply: the
+window has none. A guard of 1000 options a mod and 1000 mods only stops code
+that registers without end, and `max_options`, `max_mods` and `capacity`
+report it.
 
 Instead of an in-game tab, each mod's options become a list for
 [HD2 Mod Setting GUI](https://github.com/pat-pat-patrick/hd2-mod-setting-gui),

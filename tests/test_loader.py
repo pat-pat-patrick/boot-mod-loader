@@ -611,6 +611,44 @@ def check_second_launch(source, failures):
         shutil.rmtree(root, ignore_errors=True)
 
 
+MANY = ("-- HD2-Addon: mods/test/many\n"
+        "local M = ModOptionsMenu\n"
+        "MANY_OK, MANY_MAX = 0, M.max_options\n"
+        "for i = 1, 40 do\n"
+        "  if M.register_option('many.o' .. i, { type = 'toggle', label = 'O' .. i, mod = 'Many' }) then MANY_OK = MANY_OK + 1 end\n"
+        "end\n")
+
+
+def check_no_menu_limits(source, failures):
+    """(0.9.0) The menu's tab limits are gone: 40 options of one mod all go into its list; the
+    limits reported are the loader's guards (1000), not 32 / 112 / 36."""
+    import json
+    root = tempfile.mkdtemp(prefix="bootloader_")
+    try:
+        fake_game(root, {1: ("mods/test/many", MANY, 2)})
+        rt = runtime(root, CHECKED)
+        rt.eval("loadstring")(source, "=boot")()
+        rt.execute("init()")
+        rt.execute("update(0.016)")
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+        listing = json.load(open(os.path.join(app, "mom_many_options.json"), encoding="utf-8"))
+        ok(rt.eval("MANY_OK") == 40 and len(listing["options"]) == 40,
+           "40 options of one mod all registered and listed: %r" % rt.eval("MANY_OK"), failures)
+        ok(rt.eval("MANY_MAX") == 1000 and rt.eval("ModOptionsMenu.max_mods") == 1000
+           and rt.eval("ModBindingsMenu.capacity") == 1000,
+           "max_options, max_mods and capacity report the guards (1000)", failures)
+        # from here (no mod on the stack) the options go to a group of their own: fill it to the guard
+        rt.execute("for i = 1, 1000 do ModOptionsMenu.register_option('lots.o' .. i, "
+                   "{ type = 'toggle', label = 'O', mod = 'Lots' }) end")
+        r = rt.eval("tostring(ModOptionsMenu.register_option('lots.last', { type = 'toggle', label = 'L', mod = 'Lots' }))")
+        rt.execute("update(1.5)")                      # the log is written out once a second
+        log = open(os.path.join(app, "boot_mod_loader.log"), encoding="utf-8").read()
+        ok(r == "false" and log.count("mod already has 1000 options -- registrations past this guard are refused") == 1,
+           "past the guard: refused, logged once", failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def check(source):
     """Run the loader source on Lua 5.1 in a fake game; return the failures."""
     failures = []
@@ -686,6 +724,7 @@ def check(source):
         check_stale_lists(source, failures)
         check_own_list(source, failures)
         check_second_launch(source, failures)
+        check_no_menu_limits(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

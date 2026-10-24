@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.8.0"
+local MARKER = "boot-mod-loader-0.9.0"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -257,10 +257,24 @@ end
 -- ModOptionsMenu.values), so a player's settings from before the update
 -- carry over. Nothing is hooked or read unless a mod registers an option.
 local MOM = { groups = {}, list = {}, names = {}, natives = {}, addon_title = {}, options = {}, values = {}, callbacks = {},
-              at = 0, every = 1.0, MAX_OPTIONS = 32, MAX_MODS = 112, MAX_CHOICES = 16, NONE = {} }
+              at = 0, every = 1.0, MAX_OPTIONS = 1000, MAX_MODS = 1000, MAX_CHOICES = 16, NONE = {} }
+-- (0.9.0, the user, 10-24) The menu's 32 options a mod and 112 mods were its
+-- tab's room; the window has no such limit (ActionCam 3.0 registers 33, and
+-- actioncam.legacy was refused). 1000 of each only stops code that registers
+-- without end; reaching it is refused as the menu did, and logged once.
 do
   local ok, dir = pcall(os.getenv, "APPDATA")
   MOM.dir = (ok and type(dir) == "string") and (dir .. "\\Arrowhead\\Helldivers2\\") or nil
+end
+
+-- A guard reached: why, logged once each.
+function MOM.full(why)
+  MOM.said_full = MOM.said_full or {}
+  if not MOM.said_full[why] then
+    MOM.said_full[why] = true
+    say("ModOptionsMenu: " .. why .. " -- registrations past this guard are refused")
+  end
+  return why
 end
 
 -- A text: a string, or a function returning one (called now); control
@@ -431,7 +445,7 @@ function MOM.group(spec, addon)
   local key = mod_id or addon or title
   local g = MOM.groups[key]
   if g ~= nil then return g end
-  if #MOM.list >= MOM.MAX_MODS then return nil, "all " .. MOM.MAX_MODS .. " mod categories are in use" end
+  if #MOM.list >= MOM.MAX_MODS then return nil, MOM.full("all " .. MOM.MAX_MODS .. " mod categories are in use") end
   local base = string.gsub(string.lower(mod_id or tail or title), "[^%w]+", "_")
   base = string.match(base, "^_*(.-)_*$")
   if base == "" then base = "mod" end
@@ -718,7 +732,7 @@ function MOM.register(id, spec)
   local g, why2 = MOM.group(spec, addon)
   if g == nil then return false, why2 end
   MOM.note(tail, g.name, id)
-  if #g.options >= MOM.MAX_OPTIONS then return false, "mod already has " .. MOM.MAX_OPTIONS .. " options" end
+  if #g.options >= MOM.MAX_OPTIONS then return false, MOM.full(g.title .. ": mod already has " .. MOM.MAX_OPTIONS .. " options") end
   local key = string.gsub(id, "[^%w_]", "_")
   while g.by_key[key] ~= nil do key = key .. "_" end
   o.key, o.group = key, g
@@ -1352,7 +1366,7 @@ function MBB.register(id, label, slot, options)
   local gkey = "mbm:" .. (addon or category or "?")
   local g = MOM.groups[gkey]
   if g == nil then
-    if #MOM.list >= MOM.MAX_MODS then return false, "all " .. MOM.MAX_MODS .. " mod categories are in use" end
+    if #MOM.list >= MOM.MAX_MODS then return false, MOM.full("all " .. MOM.MAX_MODS .. " mod categories are in use") end
     local title = category or (tail and (string.gsub(tail, "_", " "))) or "Unnamed mod"
     local base = string.match(string.gsub(string.lower(tail or title), "[^%w]+", "_"), "^_*(.-)_*$")
     local name = "mbm_" .. (base ~= "" and base or "mod")
@@ -1400,7 +1414,8 @@ function MBB.set_binding(id, spec)
 end
 
 MBB.api = {
-  version = 4, capacity = 36, revision = 0, loader = MARKER, window = "HD2 Mod Setting GUI",
+  version = 4, capacity = 1000, revision = 0,          -- the native menu had 36 slots; none here
+  loader = MARKER, window = "HD2 Mod Setting GUI",
   extended = { devices = { "keyboard", "mouse" }, triggers = { "press", "release", "hold" }, count = 0 },
   register_binding = function(id, label, slot, options)
     local ok, done, why = pcall(MBB.register, id, label, slot, options)

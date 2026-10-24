@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.6.0"
+local MARKER = "boot-mod-loader-0.7.0"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -459,34 +459,114 @@ function MOM.native(tail)
   local keys = MOM.natives[tail]
   if keys ~= nil then return keys end
   keys = {}
+  if string.find(tail, "^mom_") or string.find(tail, "^mbm_") then MOM.natives[tail] = keys return keys end   -- this loader's
   local ok, f = pcall(io.open, MOM.dir .. tail .. "_options.json", "rb")
   if ok and f ~= nil then
     local okr, text = pcall(f.read, f, "*a")
     pcall(f.close, f)
-    if okr and type(text) == "string" then
+    if okr and type(text) == "string" and not string.find(text, '"stale"%s*:%s*true') then
       for k in string.gmatch(text, '"key"%s*:%s*"([^"]*)"') do keys[k] = true end
+      -- the file the window writes the values to (its "settings"), for the
+      -- registrations served from the mod's own list (below)
+      local settings = string.match(text, '"settings"%s*:%s*"([^"\\/:]+)"')
+      MOM.own_settings[tail] = settings or (tail .. "_settings.txt")
     end
   end
   MOM.natives[tail] = keys
   return keys
 end
 
--- A setting the mod already lists for the window itself is refused: listed
--- again here it would show twice, and the mod greys out in its own list what
--- the menu holds. It is that setting when a part of the id after a dot,
--- written as a key (Super Beacon's "patpatpatrick.super_beacon.ammo_mode2" ->
--- "ammo_mode2", Super Laser Sights Plus's "...plus.unit.37cde..." ->
--- "unit_37cde..."), is one of the list's keys. Settings it keeps only in the
--- menu (ActionCam 3.0: options in the menu, keys in its own list) are taken.
+-- The key in the mod's own window list a registration is, or nil. It is
+-- that setting when a part of the id after a dot, written as a key (Super
+-- Beacon's "patpatpatrick.super_beacon.ammo_mode2" -> "ammo_mode2", Super
+-- Laser Sights Plus's "...plus.unit.37cde..." -> "unit_37cde...", ActionCam's
+-- "actioncam.dist" -> "dist"), is one of the list's keys.
 function MOM.listed(tail, id)
   local keys = MOM.native(tail)
-  if next(keys) == nil then return false end
+  if next(keys) == nil then return nil end
   local at = 0
   repeat
-    if keys[(string.gsub(string.sub(id, at + 1), "[^%w_]", "_"))] then return true end
+    local key = string.gsub(string.sub(id, at + 1), "[^%w_]", "_")
+    if keys[key] then return key end
     at = string.find(id, ".", at + 1, true)
   until at == nil
-  return false
+  return nil
+end
+
+-- ------------------------------------------------------------ mods with their own window list
+
+-- When a mod has both, its own list for the window wins (the user, 10-24:
+-- "两种都有时，优先用窗口原生"). ActionCam 3.0 writes actioncam_options.json and
+-- reads actioncam_settings.txt itself when it finds no options menu, and asks
+-- every frame (type(ModOptionsMenu) == "table" and ModOptionsMenu.api == 1),
+-- so hiding the globals while its chunk runs would not do. Instead the two
+-- look-alikes answer `api` through a metamethod: nil to a mod that lists its
+-- settings for the window itself and names a menu in its source (MOM.hidden,
+-- decided as it loads), 1 to everyone else. Reading `api` then looks up the
+-- calling mod on the stack (a few debug.getinfo calls); nothing else changes,
+-- and no mod's globals go through a metamethod.
+-- A hidden mod that registers anyway (it read the table some other way), or
+-- one that registers a setting its own list holds, is served from its own
+-- list: the registration succeeds, get() is the value in the mod's own
+-- settings file (else the default), the file is read once a second like the
+-- loader's lists and a changed value goes to on_change, set() writes the
+-- value back into that file (its other lines kept), and a key is read from
+-- the file for is_down. Nothing of it goes into a mom_ / mbm_ list, so a list
+-- of earlier games that only held such settings is set aside (.stale).
+MOM.hidden, MOM.owns, MOM.own_settings = {}, {}, {}
+
+-- `api` as the calling mod sees it.
+function MOM.api_for()
+  if next(MOM.hidden) == nil then return 1 end
+  local addon = MOM.caller()
+  local tail = addon and string.match(addon, "([%w_]+)$") or nil
+  if tail ~= nil and MOM.hidden[tail] then return nil end
+  return 1
+end
+
+-- Whether a mod about to load has its own list and names a menu: then the
+-- menus are hidden from it (logged).
+function MOM.hide_from(name, source)
+  local tail = string.match(name or "", "([%w_]+)$")
+  if tail == nil or MOM.dir == nil or type(source) ~= "string" then return false end
+  if not string.find(source, "ModOptionsMenu", 1, true) and not string.find(source, "ModBindingsMenu", 1, true) then return false end
+  if next(MOM.native(tail)) == nil then return false end
+  MOM.hidden[tail] = true
+  say(name .. ": lists its settings in the settings window itself (" .. tail .. "_options.json): "
+    .. "Mod Options Menu and Mod Bindings Menu are hidden from it (api nil), so it uses the window")
+  return true
+end
+
+-- The group of the settings served from a mod's own list (one per mod).
+function MOM.own_group(tail)
+  local g = MOM.owns[tail]
+  if g ~= nil then return g end
+  local settings = MOM.own_settings[tail] or (tail .. "_settings.txt")
+  g = { key = "own:" .. tail, title = tail, name = tail, own = true, settings = settings, options = {}, by_key = {},
+        dirty = false, write = false, file_values = MOM.read_values(MOM.dir .. settings), migrated = 0 }
+  MOM.owns[tail] = g
+  MOM.list[#MOM.list + 1] = g
+  return g
+end
+
+-- A registration of a setting the mod's own list holds: served from that list.
+function MOM.serve_own(tail, key, o)
+  local g = MOM.own_group(tail)
+  local had = g.by_key[key]
+  if had ~= nil then
+    if had.id == o.id then return true end
+    return false, "another registration already uses " .. key .. " of the mod's own list"
+  end
+  o.key, o.group = key, g
+  g.options[#g.options + 1] = o
+  g.by_key[key] = o
+  MOM.options[o.id] = o
+  local v = MOM.decode(o, g.file_values[key])
+  if v == nil then v = o.default end
+  MOM.values[o.id] = v
+  g.announce = true
+  L.hook_update()
+  return true
 end
 
 function MOM.register(id, spec)
@@ -494,19 +574,13 @@ function MOM.register(id, spec)
   if o == nil then return false, why end
   local addon = MOM.caller()
   local tail = addon and string.match(addon, "([%w_]+)$") or nil
-  if tail ~= nil and MOM.dir ~= nil and MOM.listed(tail, id) then
-    if not MOM.said_listed then MOM.said_listed = {} end
-    if not MOM.said_listed[tail] then
-      MOM.said_listed[tail] = true
-      say("ModOptionsMenu: " .. tail .. " lists its settings in the settings window itself -- those stay there")
-    end
-    return false, "this setting is in the mod's own list in the settings window"
-  end
   local had = MOM.options[id]
   if had ~= nil then
     if MOM.same(had, o) then return true end
     return false, "option already registered differently"
   end
+  local own = tail ~= nil and MOM.dir ~= nil and MOM.listed(tail, id) or nil
+  if own ~= nil then return MOM.serve_own(tail, own, o) end
   local g, why2 = MOM.group(spec, addon)
   if g == nil then return false, why2 end
   if #g.options >= MOM.MAX_OPTIONS then return false, "mod already has " .. MOM.MAX_OPTIONS .. " options" end
@@ -725,9 +799,36 @@ function MOM.sweep(mods)
   end
 end
 
--- Every value of a mod, in its options' order, ending #end.
+-- Every value of a mod, in its options' order, ending #end. A mod's own
+-- settings file holds more than what was registered: its other lines are
+-- kept as they are (read again now), the registered values replaced.
 function MOM.text_of(g)
   local lines = {}
+  if g.own then
+    local text = g.text
+    local ok, f = pcall(io.open, MOM.dir .. g.settings, "rb")
+    if ok and f ~= nil then
+      local _, now = pcall(f.read, f, "*a")
+      pcall(f.close, f)
+      if type(now) == "string" and string.find(now, "\n#end%s*$") then text = now end
+    end
+    local seen = {}
+    for line in string.gmatch(text or "", "[^\r\n]+") do
+      local k = string.match(line, "^([^=]+)=")
+      local o = k and g.by_key[k]
+      if o ~= nil then
+        lines[#lines + 1] = k .. "=" .. MOM.encode(o, MOM.values[o.id])
+        seen[k] = true
+      elseif line ~= "#end" then
+        lines[#lines + 1] = line
+      end
+    end
+    for _, o in ipairs(g.options) do
+      if not seen[o.key] then lines[#lines + 1] = o.key .. "=" .. MOM.encode(o, MOM.values[o.id]) end
+    end
+    lines[#lines + 1] = "#end"
+    return table.concat(lines, "\n") .. "\n"
+  end
   for _, o in ipairs(g.options) do lines[#lines + 1] = o.key .. "=" .. MOM.encode(o, MOM.values[o.id]) end
   lines[#lines + 1] = "#end"
   return table.concat(lines, "\n") .. "\n"
@@ -750,7 +851,12 @@ function MOM.tick_group(g)
     g.dirty = false
     MOM.export(g)
   end
-  local path = MOM.dir .. g.name .. "_settings.txt"
+  if g.announce then
+    g.announce = false
+    say(string.format("settings window: %s: %d registration(s) served from its own list (%s_options.json, %s)",
+      g.title, #g.options, g.name, g.settings))
+  end
+  local path = MOM.dir .. (g.own and g.settings or (g.name .. "_settings.txt"))
   if g.write then
     g.write = false
     MOM.write(g, path)
@@ -809,6 +915,7 @@ function MOM.tick_group(g)
   if #changed == 0 then return end
   local line = os.date("%H:%M:%S ") .. "settings window: applied " .. table.concat(changed, " ")
   say(g.title .. ": " .. line)
+  if g.own then return end                      -- the mod's own log is its own to write
   local okl, lf = pcall(io.open, MOM.dir .. g.name .. ".log", "a")
   if okl and lf ~= nil then
     pcall(lf.write, lf, line .. "\n")
@@ -1090,10 +1197,21 @@ function MBB.register(id, label, slot, options)
   end
   local addon = MOM.caller()
   local tail = addon and string.match(addon, "([%w_]+)$") or nil
-  if tail ~= nil and MOM.dir ~= nil and MOM.listed(tail, id) then
-    return false, "this key is in the mod's own list in the settings window"
-  end
   local default, trigger = MBB.default(options.default)
+  local function bound()
+    MBB.bindings[id] = { label = text, slot = slot, trigger = trigger,
+                         how = trigger == "hold" and "button" or (trigger == "release" and "released" or "pressed") }
+    MBB.count = MBB.count + 1
+    MBB.api.revision = MBB.api.revision + 1
+    MBB.api.extended.count = MBB.count
+  end
+  -- a key the mod's own list holds: read from its own settings file
+  local own = tail ~= nil and MOM.dir ~= nil and MOM.listed(tail, id) or nil
+  if own ~= nil then
+    local done, why = MOM.serve_own(tail, own, { id = id, kind = "key", label = text, default = default })
+    if done then bound() end
+    return done, why
+  end
   local gkey = "mbm:" .. (addon or category or "?")
   local g = MOM.groups[gkey]
   if g == nil then
@@ -1118,11 +1236,7 @@ function MBB.register(id, label, slot, options)
   local v = MOM.decode(o, g.file_values[key])
   if v == nil then v, g.write = default, true end
   MOM.values[id] = v
-  MBB.bindings[id] = { label = text, slot = slot, trigger = trigger,
-                       how = trigger == "hold" and "button" or (trigger == "release" and "released" or "pressed") }
-  MBB.count = MBB.count + 1
-  MBB.api.revision = MBB.api.revision + 1
-  MBB.api.extended.count = MBB.count
+  bound()
   g.dirty = true
   L.hook_update()
   return true
@@ -1148,7 +1262,7 @@ function MBB.set_binding(id, spec)
 end
 
 MBB.api = {
-  api = 1, version = 4, capacity = 36, revision = 0, loader = MARKER, window = "HD2 Mod Setting GUI",
+  version = 4, capacity = 36, revision = 0, loader = MARKER, window = "HD2 Mod Setting GUI",
   extended = { devices = { "keyboard", "mouse" }, triggers = { "press", "release", "hold" }, count = 0 },
   register_binding = function(id, label, slot, options)
     local ok, done, why = pcall(MBB.register, id, label, slot, options)
@@ -1195,9 +1309,12 @@ MBB.api = {
   end,
 }
 
+-- `api` is 1, or nil to a mod with its own window list (MOM.api_for, above)
+local API = { __index = function(_, k) if k == "api" then return MOM.api_for() end end }
+setmetatable(MBB.api, API)
 if rawget(_G, "ModOptionsMenu") == nil then
-  rawset(_G, "ModOptionsMenu", {
-    api = 1, version = 3, max_mods = MOM.MAX_MODS, max_options = MOM.MAX_OPTIONS,
+  rawset(_G, "ModOptionsMenu", setmetatable({
+    version = 3, max_mods = MOM.MAX_MODS, max_options = MOM.MAX_OPTIONS,
     revision = MARKER, window = "HD2 Mod Setting GUI",
     register_option = function(id, spec)
       local ok, done, why = pcall(MOM.register, id, spec)
@@ -1214,7 +1331,7 @@ if rawget(_G, "ModOptionsMenu") == nil then
       return true
     end,
     ready = function() return true end,
-  })
+  }, API))
 end
 if rawget(_G, "ModBindingsMenu") == nil then
   rawset(_G, "ModBindingsMenu", MBB.api)
@@ -1258,6 +1375,7 @@ local function run(entry)
     return
   end
   local chunk, err = loadstring(source, "@" .. entry.name)
+  if chunk ~= nil then pcall(MOM.hide_from, entry.name, source) end
   if chunk == nil then
     entry.state = "does not compile"
     say(entry.name .. " (patch_" .. entry.patch .. "): does not compile on Lua 5.1: " .. tostring(err))

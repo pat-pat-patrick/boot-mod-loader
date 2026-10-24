@@ -456,6 +456,71 @@ def check_options(source, failures):
         shutil.rmtree(late, ignore_errors=True)
 
 
+OWN = ("-- HD2-Addon: mods/test/own\n"
+       "-- reads ModOptionsMenu and ModBindingsMenu like a menu mod, and has its own window list\n"
+       "SEEN = {}\n"
+       "local prev = rawget(_G, 'update')\n"
+       "rawset(_G, 'update', function(...)\n"
+       "  SEEN.mom = type(ModOptionsMenu) == 'table' and ModOptionsMenu.api\n"
+       "  SEEN.mbm = type(ModBindingsMenu) == 'table' and ModBindingsMenu.api\n"
+       "  if prev then return prev(...) end end)\n"
+       "local M, B = rawget(_G, 'ModOptionsMenu'), rawget(_G, 'ModBindingsMenu')\n"
+       "OWN_CHANGES = {}\n"
+       "OWN_R = { M.register_option('own.dist', { type = 'slider', label = 'Dist', min = 0, max = 2, step = 0.5, default = 1 }),\n"
+       "          B.register_binding('own.toggle', 'Toggle', nil, { default = 'f6' }) }\n"
+       "M.on_change('own.dist', function(v, id) OWN_CHANGES[#OWN_CHANGES + 1] = id .. '=' .. tostring(v) end)\n"
+       "OWN_START = M.get('own.dist')\n")
+
+
+def check_own_list(source, failures):
+    """A mod with its own list for the settings window uses it, not the look-alikes: it reads
+    api nil; other mods still see the menus; what it registers anyway is served from its own list."""
+    root = tempfile.mkdtemp(prefix="bootloader_")
+    try:
+        fake_game(root, {1: ("mods/test/cam", CAM, 2), 2: ("mods/test/own", OWN, 2)})
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+        def put(name, text):
+            open(os.path.join(app, name), "w", encoding="utf-8", newline="\n").write(text)
+        put("own_options.json", '{"title": "Own", "settings": "own_settings.txt", "options": '
+                                '[{"key": "dist", "type": "slider"}, {"key": "toggle", "type": "key"}, {"key": "other"}]}')
+        put("own_settings.txt", "dist=1.5\ntoggle=q\nother=5\n#end\n")
+        put("mom_own_options.json", '{"title": "Own", "options": []}')
+        rt = runtime(root, CHECKED)
+        rt.execute(ENGINE)
+        rt.eval("loadstring")(source, "=boot")()
+        rt.execute("init()")
+        for _ in range(3):
+            rt.execute("update(0.4)")
+        here = set(os.listdir(app))
+        log = open(os.path.join(app, "boot_mod_loader.log"), encoding="utf-8").read()
+        ok("mods/test/own: lists its settings in the settings window itself" in log and "mods/test/cam: lists" not in log,
+           "the log names the mod the menus are hidden from", failures)
+        ok(rt.eval("ModOptionsMenu.api") == 1 and rt.eval("ModBindingsMenu.api") == 1 and rt.eval("R1") is True
+           and "mom_cam_options.json" in here, "other mods see the menus (api 1) and use them", failures)
+        seen = rt.eval("tostring(SEEN.mom) .. ',' .. tostring(SEEN.mbm)")
+        ok(seen == "nil,nil", "the mod with its own list reads api nil every frame: %r" % seen, failures)
+        r = rt.eval("tostring(OWN_R[1]) .. ',' .. tostring(OWN_R[2]) .. ',' .. tostring(OWN_START)")
+        ok(r == "true,true,1.5", "registering anyway: accepted, the value from its own settings file: %r" % r, failures)
+        ok("mom_own_options.json" not in here and "mom_own_options.json.stale" in here and "mbm_own_options.json" not in here
+           and "settings window: own: 2 registration(s) served from its own list (own_options.json, own_settings.txt)" in log,
+           "nothing of it goes into a mom_/mbm_ list (the old one set aside); logged", failures)
+        put("own_settings.txt", "dist=0.5\ntoggle=q\nother=5\n#end\n")
+        for _ in range(3):
+            rt.execute("update(0.4)")
+        ok(rt.eval("table.concat(OWN_CHANGES, ' ')") == "own.dist=0.5" and rt.eval("ModOptionsMenu.get('own.dist')") == 0.5,
+           "a change in the window reaches on_change and get() within a second", failures)
+        rt.execute("ModOptionsMenu.set('own.dist', 2)")
+        for _ in range(3):
+            rt.execute("update(0.4)")
+        text = open(os.path.join(app, "own_settings.txt"), encoding="utf-8").read()
+        ok(text == "dist=2\ntoggle=q\nother=5\n#end\n", "set() writes the value into its own file, the rest kept: %r" % text,
+           failures)
+        rt.execute("KB_PRESSED[6] = true update(0.016)")
+        ok(rt.eval("ModBindingsMenu.is_down('own.toggle')") is True, "a key from its own file (q) counts", failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def check(source):
     """Run the loader source on Lua 5.1 in a fake game; return the failures."""
     failures = []
@@ -529,6 +594,7 @@ def check(source):
         check_options(source, failures)
         check_bindings(source, failures)
         check_stale_lists(source, failures)
+        check_own_list(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

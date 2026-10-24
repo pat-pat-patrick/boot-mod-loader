@@ -23,6 +23,10 @@ itself the Bingus Shared Loader way.
 Install it with your mod manager like any other mod, next to the Lua mods you
 use. It needs no settings.
 
+For the settings of mods made for Mod Options Menu and Mod Bindings Menu, use
+[HD2 Mod Setting GUI](https://github.com/pat-pat-patrick/hd2-mod-setting-gui)
+**1.10.1 or newer**.
+
 - Its log is `%APPDATA%\Arrowhead\Helldivers2\boot_mod_loader.log`. The log
   lists the archives read, every mod found, and whether each mod loaded, did not
   compile, or failed (with a traceback).
@@ -115,9 +119,38 @@ into the new profile.
 
 A value the window has not set yet comes from Mod Options Menu's own saved
 values (`%LOCALAPPDATA%\CowboyBingus\Helldivers2\Logs\ModOptionsMenu.values`).
-A mod that already writes its own list for the window (`<addon name>_options.json`)
-is refused, so its settings are not listed twice. Nothing is hooked or read
-until a mod registers an option.
+Nothing is hooked or read until a mod registers an option.
+
+**A mod with its own list for the window.** When a mod has both, its own list
+wins. A mod has its own list when it writes `<addon name>_options.json` itself
+(not `mom_` or `mbm_`, not marked stale). If such a mod also names
+`ModOptionsMenu` or `ModBindingsMenu` in its source:
+
+- both look-alikes answer `api` as `nil` to it, so a mod that checks
+  `ModOptionsMenu.api == 1` (ActionCam 3.0, every frame) takes its own path to
+  the window; every other mod reads `api = 1`;
+- the log names each mod the menus are hidden from.
+
+A setting such a mod registers anyway, or one any mod registers that its own
+list holds (a part of the id after a dot, written as a key: `actioncam.dist` ->
+`dist`), is served from the mod's own list instead of being refused:
+
+- the registration succeeds; `get()` is the value in the mod's own settings
+  file (the list's `"settings"`), else the default;
+- that file is read once a second, and a changed value goes to `on_change`;
+- `set()` and `set_binding()` write the value back into that file, keeping its
+  other lines;
+- a key is read from that file for `is_down()`;
+- nothing of it goes into a `mom_` or `mbm_` list.
+
+**Lists no mod registers any more.** Once every mod has started, each `mom_` or
+`mbm_` list that no mod registered this game is renamed
+`<name>_options.json.stale`, so the window shows only current settings. Its
+`_settings.txt` stays, so the values come back if the mod registers again. The
+candidates are the lists the loader wrote before (its index,
+`boot_mod_loader_lists.txt`) and the names of the mods loaded now. Where the
+game's Lua has no `os.rename`, the list is emptied and marked
+`{"stale": true}` instead, which the window skips from 1.10.1.
 
 ### Mod Bindings Menu
 
@@ -181,7 +214,11 @@ runs, against a fake game folder of real patch archives. It covers these cases:
   window, `poll` and `set_binding`;
 - the Mod Options Menu look-alike: registration checks, carried-over values,
   the window's files, a change from the window, a half-written file, `set()`,
-  a late registration, and a mod with its own list.
+  a late registration, and a mod with its own list;
+- lists no mod registered this game, with and without `os.rename`;
+- a mod with its own list: it reads `api` as `nil` every frame, other mods
+  still use the menus, and the settings it registers anyway are served from
+  its own settings file (`get`, `on_change`, `set`, keys).
 
 ## Credits
 

@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.5.1"
+local MARKER = "boot-mod-loader-0.6.0"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -615,6 +615,7 @@ function MOM.export(g)
                           options = opts, menu_owned = MOM.NONE, profile = MOM.profile_key(g),
                           profiles = g.profiles or nil }) .. "\n"
   local path = MOM.dir .. g.name .. "_options.json"
+  MOM.remember(g.name)
   local okr, f = pcall(io.open, path, "rb")
   if okr and f ~= nil then
     local _, old = pcall(f.read, f, "*a")
@@ -631,6 +632,97 @@ function MOM.export(g)
   say(string.format("%s: %s (%s), %d %s -> %s_options.json%s", g.keys and "ModBindingsMenu" or "ModOptionsMenu",
     title, g.addon or "?", #g.options, g.keys and "key(s)" or "option(s)", g.name,
     g.migrated > 0 and (", " .. g.migrated .. " value(s) carried over from Mod Options Menu") or ""))
+end
+
+-- ------------------------------------------------------------ lists nobody registered
+
+-- A list this loader wrote in an earlier game stays in the settings folder
+-- after its mod stops registering (2026-10-24: ActionCam writes its own
+-- actioncam_options.json now; the window merged the old mom_actioncam list by
+-- title and the player changed settings that nothing read). So once every mod
+-- has started, each mom_ / mbm_ list that no mod registered this game is set
+-- aside: renamed <name>_options.json.stale. Its _settings.txt stays, so the
+-- values come back if the mod registers again (the list is written anew then).
+-- The loader cannot list a folder (io only), so the candidates are the names it
+-- wrote before (its index, boot_mod_loader_lists.txt) and the names the mods
+-- loaded now would get. Nothing else in the folder is touched.
+MOM.INDEX = "boot_mod_loader_lists.txt"
+
+-- The names in the index, read once.
+function MOM.index()
+  if MOM.indexed ~= nil then return MOM.indexed end
+  MOM.indexed = {}
+  local ok, f = pcall(io.open, MOM.dir .. MOM.INDEX, "rb")
+  if ok and f ~= nil then
+    local _, text = pcall(f.read, f, "*a")
+    pcall(f.close, f)
+    for name in string.gmatch(text or "", "[^\r\n]+") do
+      if string.find(name, "^mom_[%w_]+$") or string.find(name, "^mbm_[%w_]+$") then MOM.indexed[name] = true end
+    end
+  end
+  return MOM.indexed
+end
+
+-- A list's name into the index (once).
+function MOM.remember(name)
+  if MOM.dir == nil or MOM.index()[name] then return end
+  MOM.indexed[name] = true
+  local ok, f = pcall(io.open, MOM.dir .. MOM.INDEX, "ab")
+  if ok and f ~= nil then
+    pcall(f.write, f, name .. "\n")
+    pcall(f.close, f)
+  end
+end
+
+-- A list set aside: renamed .stale; where the game's Lua has no os.rename
+-- (not measured on 25988413), emptied with "stale": true, which the window skips.
+function MOM.retire(name)
+  local path = MOM.dir .. name .. "_options.json"
+  local ok, f = pcall(io.open, path, "rb")
+  if not ok or f == nil then return false end
+  pcall(f.close, f)
+  local stale = path .. ".stale"
+  if type(os) == "table" and type(os.rename) == "function" then
+    if type(os.remove) == "function" then pcall(os.remove, stale) end
+    local okr, done = pcall(os.rename, path, stale)
+    if okr and done then
+      say("settings window: " .. name .. "_options.json is no mod's this game: renamed .stale (its settings stay)")
+      return true
+    end
+  end
+  local okw, w = pcall(io.open, path, "wb")
+  if okw and w ~= nil then
+    pcall(w.write, w, '{"stale": true, "options": []}\n')
+    pcall(w.close, w)
+    say("settings window: " .. name .. "_options.json is no mod's this game: emptied, marked stale (no os.rename)")
+    return true
+  end
+  return false
+end
+
+-- Once every mod has started: the lists of the index and of the mods loaded
+-- now that no mod registered set aside.
+function MOM.sweep(mods)
+  if MOM.dir == nil then return end
+  local names = {}
+  for name in pairs(MOM.index()) do names[#names + 1] = name end
+  for _, entry in ipairs(mods or {}) do
+    local tail = string.match(entry.name or "", "([%w_]+)$")
+    if tail ~= nil then
+      local base = string.match(string.gsub(string.lower(tail), "[^%w]+", "_"), "^_*(.-)_*$")
+      if base ~= "" then
+        names[#names + 1] = "mom_" .. base
+        names[#names + 1] = "mbm_" .. base
+      end
+    end
+  end
+  local done = {}
+  for _, name in ipairs(names) do
+    if not done[name] and not MOM.names[name] then
+      done[name] = true
+      MOM.retire(name)
+    end
+  end
 end
 
 -- Every value of a mod, in its options' order, ending #end.
@@ -1209,6 +1301,8 @@ local function start()
     local ran, why = pcall(fn)
     if not ran then say("after_startup: " .. tostring(why)) end
   end
+  local swept, why = pcall(MOM.sweep, list)
+  if not swept then say("settings window lists: " .. tostring(why)) end
   local loaded = 0
   for _, entry in ipairs(list) do if entry.state == "loaded" then loaded = loaded + 1 end end
   say(string.format("started %d of %d mods in %.0f ms", loaded, #list, (os.clock() - clock0) * 1000))

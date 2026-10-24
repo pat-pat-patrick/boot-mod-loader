@@ -270,6 +270,67 @@ def check_bindings(source, failures):
         shutil.rmtree(root, ignore_errors=True)
 
 
+OLDCAM = "-- HD2-Addon: mods/test/oldcam\nOLDCAM_RAN = true\n"     # loaded, registers nothing any more
+
+
+def check_stale_lists(source, failures):
+    """Lists of earlier games that no mod registered this game are set aside (.stale); their
+    settings stay; lists registered now, and files that are not the loader's, are not touched
+    (2026-10-24: ActionCam's old mom_ list beside its own list)."""
+    import json
+    root = tempfile.mkdtemp(prefix="bootloader_")
+    try:
+        fake_game(root, {1: ("mods/test/cam", CAM, 2), 2: ("mods/test/oldcam", OLDCAM, 2)})
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+        def put(name, text="{}"):
+            open(os.path.join(app, name), "w", encoding="utf-8", newline="\n").write(text)
+        put("mom_oldcam_options.json", '{"title": "ActionCam", "options": []}')
+        put("mom_oldcam_settings.txt", "fov=3\n#end\n")
+        put("mbm_oldcam_options.json")
+        put("mom_gone_options.json")                     # a mod no longer installed, in the index
+        put("mom_gone_settings.txt", "x=1\n#end\n")
+        put("boot_mod_loader_lists.txt", "mom_gone\n")
+        put("mom_cam_options.json", '{"title": "old"}')  # registered again this game
+        put("oldcam_options.json", '{"title": "ActionCam"}')   # the mod's own list: not the loader's
+        rt = runtime(root, CHECKED)
+        rt.eval("loadstring")(source, "=boot")()
+        rt.execute("init()")
+        rt.execute("update(0.016)")
+        here = set(os.listdir(app))
+        ok(rt.eval("OLDCAM_RAN") is True, "the mod that registers nothing still runs", failures)
+        ok("mom_oldcam_options.json" not in here and "mom_oldcam_options.json.stale" in here
+           and "mbm_oldcam_options.json.stale" in here,
+           "a loaded mod's lists that it no longer registers: renamed .stale", failures)
+        ok("mom_gone_options.json.stale" in here and "mom_gone_options.json" not in here,
+           "a list in the index whose mod is gone: renamed .stale", failures)
+        ok({"mom_oldcam_settings.txt", "mom_gone_settings.txt"} <= here, "their settings stay", failures)
+        cam = json.load(open(os.path.join(app, "mom_cam_options.json"), encoding="utf-8"))
+        ok(cam["title"] == "Cam Test" and "mom_cam_options.json.stale" not in here,
+           "a list registered this game stays (written anew)", failures)
+        ok("oldcam_options.json" in here, "a mod's own list is not touched", failures)
+        index = open(os.path.join(app, "boot_mod_loader_lists.txt"), encoding="utf-8").read().split()
+        ok("mom_cam" in index and "mom_gone" in index, "the lists written are remembered in the index", failures)
+        log = open(os.path.join(app, "boot_mod_loader.log"), encoding="utf-8").read()
+        ok("mom_oldcam_options.json is no mod's this game: renamed .stale" in log, "the log says what was set aside", failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+    # a game whose Lua has no os.rename (not measured on 25988413): emptied, marked stale
+    root = tempfile.mkdtemp(prefix="bootloader_")
+    try:
+        fake_game(root, {1: ("mods/test/oldcam", OLDCAM, 2)})
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+        open(os.path.join(app, "mom_oldcam_options.json"), "w").write('{"title": "ActionCam", "options": [{"key": "fov"}]}')
+        rt = runtime(root, CHECKED)
+        rt.execute("os.rename = nil")
+        rt.eval("loadstring")(source, "=boot")()
+        rt.execute("init()")
+        listing = json.load(open(os.path.join(app, "mom_oldcam_options.json"), encoding="utf-8"))
+        ok(listing.get("stale") is True and listing.get("options") == [],
+           "without os.rename: the list emptied and marked stale: %r" % listing, failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def check_options(source, failures):
     """The ModOptionsMenu look-alike and the settings window's files."""
     import json
@@ -466,6 +527,7 @@ def check(source):
         ok(rt2.eval("rawequal(update, GAME_UPDATE)") is True, "no option registered: update left alone", failures)
         check_options(source, failures)
         check_bindings(source, failures)
+        check_stale_lists(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

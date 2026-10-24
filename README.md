@@ -131,6 +131,20 @@ wins. A mod has its own list when it writes `<addon name>_options.json` itself
   the window; every other mod reads `api = 1`;
 - the log names each mod the menus are hidden from.
 
+**From the second launch.** Some mods support both but write their own list
+only when they find no menu, so with the loader they would never get one.
+When such a mod registers with a menu, and its source also writes the
+window's files itself (`<name>_options.json`, `<name>_settings.txt`,
+`"settings":"<name>_settings.txt"` and `#end`), the loader notes it in
+`boot_mod_loader_native.txt`. The first launch works through the menus as
+before. From the next launch:
+
+- the menus are hidden from that mod;
+- the values set through the menus go into its own settings file first, when
+  it has none (its own key is the part of the id after the first dot);
+- if its own list has not appeared after 10 seconds of play, the menus come
+  back at once and are never hidden from that mod again.
+
 A setting such a mod registers anyway, or one any mod registers that its own
 list holds (a part of the id after a dot, written as a key: `actioncam.dist` ->
 `dist`), is served from the mod's own list instead of being refused:
@@ -219,6 +233,9 @@ runs, against a fake game folder of real patch archives. It covers these cases:
 - a mod with its own list: it reads `api` as `nil` every frame, other mods
   still use the menus, and the settings it registers anyway are served from
   its own settings file (`get`, `on_change`, `set`, keys).
+- a mod that supports both, over three launches: the menus first (noted), then
+  its own list with the values carried over; one that only looks like it gets
+  the menus back after 10 s and is not hidden again.
 
 ## Credits
 

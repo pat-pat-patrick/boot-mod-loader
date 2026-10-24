@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.7.0"
+local MARKER = "boot-mod-loader-0.8.0"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -524,17 +524,151 @@ function MOM.api_for()
   return 1
 end
 
--- Whether a mod about to load has its own list and names a menu: then the
--- menus are hidden from it (logged).
+-- A mod that supports both but writes its own list only when it finds no
+-- menu (ActionCam 3.0) never gets one while the menus are always there. So
+-- (0.8.0, the user, 10-24: "从第二次启动起改用原生"; the first launch must work
+-- as before): in the game where it registers with a menu and its source also
+-- writes the window's files itself (MOM.features: "<name>_options.json",
+-- "<name>_settings.txt", "settings":"<name>_settings.txt" and "#end" all in
+-- its source), it is noted, and from the next launch the menus are hidden
+-- from it. Its values set through the menus go into its own settings file
+-- first (when it has none), by id: the menus' key for an id is the id written
+-- as a key, its own key the part after the first dot. If its own list has not
+-- appeared after MOM.WAIT seconds of play, the guess was wrong: the menus come
+-- back at once (such a mod asks every frame) and are never hidden from it
+-- again. The notes are in boot_mod_loader_native.txt: "<name> TAB next | yes
+-- | no", and "<name> TAB id TAB <list> TAB <id>" for the values.
+MOM.NOTES, MOM.WAIT, MOM.features, MOM.watch = "boot_mod_loader_native.txt", 10, {}, {}
+
+function MOM.notes()
+  if MOM.noted ~= nil then return MOM.noted end
+  MOM.noted = { state = {}, ids = {} }
+  local ok, f = pcall(io.open, MOM.dir .. MOM.NOTES, "rb")
+  if ok and f ~= nil then
+    local _, text = pcall(f.read, f, "*a")
+    pcall(f.close, f)
+    for line in string.gmatch(text or "", "[^\r\n]+") do
+      local tail, state = string.match(line, "^([%w_]+)\t(%a+)$")
+      if tail ~= nil then MOM.noted.state[tail] = state end
+      local t2, list, id = string.match(line, "^([%w_]+)\tid\t([%w_]+)\t([^\t]+)$")
+      if t2 ~= nil then
+        MOM.noted.ids[t2] = MOM.noted.ids[t2] or {}
+        table.insert(MOM.noted.ids[t2], { list = list, id = id })
+      end
+    end
+  end
+  return MOM.noted
+end
+
+function MOM.save_notes()
+  local n, lines = MOM.notes(), {}
+  for tail, state in pairs(n.state) do
+    lines[#lines + 1] = tail .. "\t" .. state
+    for _, x in ipairs(n.ids[tail] or {}) do lines[#lines + 1] = tail .. "\tid\t" .. x.list .. "\t" .. x.id end
+  end
+  table.sort(lines)
+  local ok, w = pcall(io.open, MOM.dir .. MOM.NOTES, "wb")
+  if ok and w ~= nil then
+    pcall(w.write, w, table.concat(lines, "\n") .. (lines[1] and "\n" or ""))
+    pcall(w.close, w)
+  end
+end
+
+-- A registration with a menu: a mod that supports the window too is noted
+-- (with the id and its list, for its values next launch).
+function MOM.note(tail, list, id)
+  if tail == nil or not MOM.features[tail] or MOM.hidden[tail] then return end
+  local n = MOM.notes()
+  local state = n.state[tail]
+  if state == "no" then return end
+  if state == nil then
+    n.state[tail] = "next"
+    n.ids[tail] = {}
+    say(tail .. ": supports the settings window itself; from the next launch it will use it")
+  end
+  if state == nil or state == "next" then
+    for _, x in ipairs(n.ids[tail]) do if x.id == id then return end end
+    table.insert(n.ids[tail], { list = list, id = id })
+    MOM.notes_dirty = true
+  end
+end
+
+-- The values a noted mod had through the menus, into its own settings file
+-- when it has none yet. How many.
+function MOM.carry(tail)
+  local own = MOM.dir .. tail .. "_settings.txt"
+  local ok, f = pcall(io.open, own, "rb")
+  if ok and f ~= nil then pcall(f.close, f) return 0 end
+  local files, lines = {}, {}
+  for _, x in ipairs(MOM.notes().ids[tail] or {}) do
+    files[x.list] = files[x.list] or MOM.read_values(MOM.dir .. x.list .. "_settings.txt")
+    local v = files[x.list][(string.gsub(x.id, "[^%w_]", "_"))]
+    local after = string.match(x.id, "^[^%.]*%.(.+)$")
+    if v ~= nil and after ~= nil then lines[#lines + 1] = string.gsub(after, "[^%w_]", "_") .. "=" .. v end
+  end
+  if lines[1] == nil then return 0 end
+  local okw, w = pcall(io.open, own, "wb")
+  if not okw or w == nil then return 0 end
+  pcall(w.write, w, table.concat(lines, "\n") .. "\n#end\n")
+  pcall(w.close, w)
+  return #lines
+end
+
+-- Whether a mod about to load is to use its own list: it has one and names
+-- a menu (0.7.0), or it was noted in an earlier launch (0.8.0). Then the menus
+-- are hidden from it (logged).
 function MOM.hide_from(name, source)
   local tail = string.match(name or "", "([%w_]+)$")
   if tail == nil or MOM.dir == nil or type(source) ~= "string" then return false end
   if not string.find(source, "ModOptionsMenu", 1, true) and not string.find(source, "ModBindingsMenu", 1, true) then return false end
-  if next(MOM.native(tail)) == nil then return false end
+  MOM.features[tail] = string.find(source, tail .. "_options.json", 1, true) ~= nil
+    and string.find(source, tail .. "_settings.txt", 1, true) ~= nil
+    and string.find(source, '"settings"%s*:%s*"' .. tail .. '_settings%.txt"') ~= nil
+    and string.find(source, "#end", 1, true) ~= nil
+  local state = MOM.notes().state[tail]
+  if state == "no" then return false end
+  if next(MOM.native(tail)) ~= nil then
+    MOM.hidden[tail] = true
+    say(name .. ": lists its settings in the settings window itself (" .. tail .. "_options.json): "
+      .. "Mod Options Menu and Mod Bindings Menu are hidden from it (api nil), so it uses the window")
+    return true
+  end
+  if state ~= "next" and state ~= "yes" then return false end
   MOM.hidden[tail] = true
-  say(name .. ": lists its settings in the settings window itself (" .. tail .. "_options.json): "
-    .. "Mod Options Menu and Mod Bindings Menu are hidden from it (api nil), so it uses the window")
+  MOM.watch[tail] = MOM.WAIT
+  local carried = MOM.carry(tail)
+  say(name .. ": supports the settings window itself (noted in an earlier launch): Mod Options Menu and Mod Bindings "
+    .. "Menu are hidden from it (api nil), so it uses the window"
+    .. (carried > 0 and ("; " .. carried .. " value(s) set through the menus carried over to " .. tail .. "_settings.txt") or "")
+    .. "; the menus come back if its list does not appear within " .. MOM.WAIT .. " s")
   return true
+end
+
+-- Once a second while a mod is watched: its own list appeared (it uses the
+-- window: noted yes), or the time is up (the menus come back: noted no).
+function MOM.check_watch(seconds)
+  for tail, left in pairs(MOM.watch) do
+    MOM.natives[tail] = nil                         -- read the list again
+    if next(MOM.native(tail)) ~= nil then
+      MOM.watch[tail] = nil
+      MOM.notes().state[tail] = "yes"
+      MOM.notes_dirty = true
+      say(tail .. ": wrote its own list (" .. tail .. "_options.json): it uses the settings window")
+    elseif left - seconds <= 0 then
+      MOM.watch[tail] = nil
+      MOM.hidden[tail] = nil
+      MOM.notes().state[tail] = "no"
+      MOM.notes_dirty = true
+      say(tail .. ": no list of its own after " .. MOM.WAIT .. " s: Mod Options Menu and Mod Bindings Menu are back "
+        .. "for it, and will not be hidden from it again")
+    else
+      MOM.watch[tail] = left - seconds
+    end
+  end
+  if MOM.notes_dirty then
+    MOM.notes_dirty = false
+    MOM.save_notes()
+  end
 end
 
 -- The group of the settings served from a mod's own list (one per mod).
@@ -583,6 +717,7 @@ function MOM.register(id, spec)
   if own ~= nil then return MOM.serve_own(tail, own, o) end
   local g, why2 = MOM.group(spec, addon)
   if g == nil then return false, why2 end
+  MOM.note(tail, g.name, id)
   if #g.options >= MOM.MAX_OPTIONS then return false, "mod already has " .. MOM.MAX_OPTIONS .. " options" end
   local key = string.gsub(id, "[^%w_]", "_")
   while g.by_key[key] ~= nil do key = key .. "_" end
@@ -927,6 +1062,7 @@ function MOM.tick(dt)
   MOM.at = MOM.at - ((type(dt) == "number" and dt > 0 and dt < 10) and dt or 0.016)
   if MOM.at > 0 then return end
   MOM.at = MOM.every
+  if next(MOM.watch) ~= nil or MOM.notes_dirty then pcall(MOM.check_watch, MOM.every) end
   for _, g in ipairs(MOM.list) do
     local ok, err = pcall(MOM.tick_group, g)
     if not ok and not g.said then
@@ -940,7 +1076,8 @@ end
 -- The game's update, wrapped once, only when a mod registered an option and
 -- the mods have loaded (a mod that registers later gets it then).
 function L.hook_update()
-  if L.update_hooked or not L.started_done or MOM.list[1] == nil or MOM.dir == nil then return end
+  if L.update_hooked or not L.started_done or (MOM.list[1] == nil and next(MOM.watch) == nil and not MOM.notes_dirty)
+     or MOM.dir == nil then return end
   L.update_hooked = true
   local previous = rawget(_G, "update")
   if type(previous) ~= "function" then previous = nil end
@@ -1227,6 +1364,7 @@ function MBB.register(id, label, slot, options)
     MOM.groups[gkey] = g
     MOM.list[#MOM.list + 1] = g
   end
+  MOM.note(tail, g.name, id)
   local key = string.gsub(id, "[^%w_]", "_")
   while g.by_key[key] ~= nil do key = key .. "_" end
   local o = { id = id, kind = "key", label = text, default = default, key = key, group = g }

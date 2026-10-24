@@ -521,6 +521,96 @@ def check_own_list(source, failures):
         shutil.rmtree(root, ignore_errors=True)
 
 
+# Supports both: with a menu it registers; without one it writes good_options.json and reads
+# good_settings.txt itself ("settings":"good_settings.txt", lines ending #end), as ActionCam 3.0 does.
+GOOD = ("-- HD2-Addon: mods/test/good\n"
+        "GOOD_SEEN = {}\n"
+        "local dir = os.getenv('APPDATA') .. '/Arrowhead/Helldivers2/'\n"
+        "local prev = rawget(_G, 'update')\n"
+        "rawset(_G, 'update', function(...)\n"
+        "  local M = ModOptionsMenu\n"
+        "  local api = type(M) == 'table' and M.api\n"
+        "  GOOD_SEEN[#GOOD_SEEN + 1] = tostring(api)\n"
+        "  if api == 1 then\n"
+        "    if not GOOD_REG then GOOD_REG = M.register_option('good.speed', { type = 'slider', label = 'Speed', mod = 'Good',\n"
+        "      min = 0, max = 10, default = 1 }) end\n"
+        "  elseif not GOOD_WROTE then\n"
+        "    local f = io.open(dir .. 'good_settings.txt', 'r')\n"
+        "    GOOD_START = f and f:read('*a') or ''\n"
+        "    if f then f:close() end\n"
+        "    local o = io.open(dir .. 'good_options.json', 'w')\n"
+        "    o:write('{\"title\":\"Good\",\"settings\":\"good_settings.txt\",\"options\":[{\"key\":\"speed\",\"type\":\"slider\"}]}' .. '\\n')\n"
+        "    o:close()\n"
+        "    GOOD_WROTE = true -- its values end with #end\n"
+        "  end\n"
+        "  if prev then return prev(...) end end)\n")
+
+# Looks like one (the same strings in its source) but never writes a list: the menus must come back.
+FAKE = ("-- HD2-Addon: mods/test/fake\n"
+        "-- would write fake_options.json and fake_settings.txt ('\"settings\":\"fake_settings.txt\"', '#end')\n"
+        "FAKE_SEEN = {}\n"
+        "local prev = rawget(_G, 'update')\n"
+        "rawset(_G, 'update', function(...)\n"
+        "  local M = ModOptionsMenu\n"
+        "  FAKE_SEEN[#FAKE_SEEN + 1] = tostring(type(M) == 'table' and M.api)\n"
+        "  if type(M) == 'table' and M.api == 1 and not FAKE_DONE then\n"
+        "    FAKE_DONE = M.register_option('fake.x', { type = 'toggle', label = 'X', mod = 'Fake' })\n"
+        "  end\n"
+        "  if prev then return prev(...) end end)\n")
+
+
+def check_second_launch(source, failures):
+    """A mod that supports the window but writes its own list only without a menu: the first launch
+    uses the menus and notes it; from the second the menus are hidden from it, its values carried
+    over; one that only looks like it gets the menus back after 10 s and is not hidden again."""
+    root = tempfile.mkdtemp(prefix="bootloader_")
+    try:
+        fake_game(root, {1: ("mods/test/good", GOOD, 2), 2: ("mods/test/cam", CAM, 2), 3: ("mods/test/fake", FAKE, 2)})
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+
+        def launch(seconds, between=None):
+            rt = runtime(root, CHECKED)
+            rt.execute(ENGINE)
+            rt.eval("loadstring")(source, "=boot")()
+            rt.execute("init()")
+            for i in range(int(seconds / 0.5)):
+                rt.execute("update(0.5)")
+                if between and i == 2:
+                    between()
+            log = open(os.path.join(app, "boot_mod_loader.log"), encoding="utf-8").read()
+            return rt, log[log.rfind("== boot-mod-loader"):]
+
+        def notes():
+            p = os.path.join(app, "boot_mod_loader_native.txt")
+            return dict(l.split("\t") for l in open(p, encoding="utf-8").read().splitlines()
+                        if l.count("\t") == 1) if os.path.exists(p) else {}
+
+        def player_sets_speed():
+            p = os.path.join(app, "mom_good_settings.txt")
+            open(p, "w", encoding="utf-8", newline="\n").write("good_speed=7\n#end\n")
+
+        rt, log = launch(4, player_sets_speed)
+        ok(rt.eval("GOOD_REG") is True and rt.eval("ModOptionsMenu.get('good.speed')") == 7
+           and "good: supports the settings window itself; from the next launch it will use it" in log
+           and notes() == {"good": "next", "fake": "next"},
+           "launch 1: the menus as before, a value set; noted (not the ordinary menu mod): %r" % notes(), failures)
+        rt, log = launch(12)
+        here = set(os.listdir(app))
+        ok(rt.eval("GOOD_SEEN[1]") == "nil" and "good_options.json" in here and "speed=7" in (rt.eval("GOOD_START") or "")
+           and notes().get("good") == "yes" and "mom_good_options.json.stale" in here,
+           "launch 2: the menus hidden, its own list written, the value carried over, the menu list set aside", failures)
+        seen = rt.eval("table.concat(FAKE_SEEN, ',')").split(",")
+        ok(seen[0] == "nil" and seen[-1] == "1" and rt.eval("FAKE_DONE") is True and notes().get("fake") == "no",
+           "launch 2: the look-alike writes no list: after 10 s the menus are back: %r .. %r" % (seen[:2], seen[-2:]),
+           failures)
+        ok(rt.eval("R1") is True, "the ordinary menu mod still uses the menus", failures)
+        rt, log = launch(2)
+        ok(rt.eval("GOOD_SEEN[1]") == "nil" and rt.eval("FAKE_SEEN[1]") == "1",
+           "launch 3: the window again; the look-alike not hidden again", failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def check(source):
     """Run the loader source on Lua 5.1 in a fake game; return the failures."""
     failures = []
@@ -595,6 +685,7 @@ def check(source):
         check_bindings(source, failures)
         check_stale_lists(source, failures)
         check_own_list(source, failures)
+        check_second_launch(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

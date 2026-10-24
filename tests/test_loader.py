@@ -376,13 +376,14 @@ def check_options(source, failures):
         native_list = os.path.join(app, "mom_native_options.json")
         native_keys = [o["key"] for o in json.load(open(native_list, encoding="utf-8"))["options"]] \
             if os.path.exists(native_list) else None
-        ok(rt.eval("NATIVE_R") is False and rt.eval("NATIVE_U") is False and rt.eval("NATIVE_E") is True
+        # (0.7.0) a setting the mod's own list holds is served from that list, no longer refused
+        ok(rt.eval("NATIVE_R") is True and rt.eval("NATIVE_U") is True and rt.eval("NATIVE_E") is True
            and native_keys == ["native_extra"]
            and json.load(open(native_list, encoding="utf-8")).get("profile") == "native_extra"
            and json.load(open(native_list, encoding="utf-8")).get("profiles") is True
-           and "native lists its settings in the settings window itself" in log,
-           "a setting in the mod's own window list is refused (x, unit.abc); one only in the menu is listed: %r"
-           % native_keys, failures)
+           and "mods/test/native: lists its settings in the settings window itself" in log,
+           "a setting in the mod's own window list is served from it, not listed (x, unit.abc); one only in the menu "
+           "is listed: %r" % native_keys, failures)
 
         with open(settings, "w", newline="\n") as f:
             f.write("cam_on=false\ncam_mode=3\ncam_fov=7.3\n#end\n")

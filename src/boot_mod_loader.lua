@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.10.0"
+local MARKER = "boot-mod-loader-0.11.0"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -674,12 +674,14 @@ end
 -- registered and no list is written. Texts that came back changed are the
 -- pack's translations: <name>_translations.json, the window's "translations"
 -- tables ({"<tag>": {"title", "<key>", "<key>.hint", "<key>.<n>"}}), written
--- only when it differs. Its language: the game's own setting is in a file
--- whose name holds the account (saves\<hex>_user_settings.config) and the
--- loader cannot list a folder, so the tag comes from the translated texts'
--- script (Han zh-Hans, kana ja, hangul ko, Cyrillic ru); in another script
--- nothing is written (logged). Files this loader wrote are listed in
--- boot_mod_loader_translations.txt; one whose pack is gone is removed.
+-- only when it differs. Its language tag is "game" (0.11.0, the user, 10-25):
+-- a pack translates into the language the player plays in, and the game's
+-- setting is in a file whose name holds the account
+-- (saves\<hex>_user_settings.config), which the loader cannot find without
+-- listing a folder; the window, outside the game, reads it and takes "game"
+-- as that language. (0.10.0 guessed the tag from the texts' script.) Files
+-- this loader wrote are listed in boot_mod_loader_translations.txt; one whose
+-- pack is gone is removed.
 MOM.TRANSLATIONS, MOM.TRANSLATE_WAIT = "boot_mod_loader_translations.txt", 30
 
 -- JSON text -> Lua value (objects and arrays as tables; null as nil); nil on
@@ -781,26 +783,6 @@ local function english(v)
     if type(v.en) == "string" then return v.en end
     if type(v[1]) == "string" then return v[1] end
   end
-  return nil
-end
-
--- The language tag of translated texts, from their script; nil when not told.
-function MOM.script_tag(texts)
-  local counts = { han = 0, kana = 0, hangul = 0, cyr = 0 }
-  for _, s in ipairs(texts) do
-    for c in string.gmatch(s, "[\224-\239][\128-\191][\128-\191]") do
-      local b1, b2 = string.byte(c, 1, 2)
-      local cp = (b1 - 224) * 4096 + (b2 - 128) * 64
-      if cp >= 0x3040 and cp < 0x3100 then counts.kana = counts.kana + 1
-      elseif cp >= 0xAC00 and cp < 0xD7B0 then counts.hangul = counts.hangul + 1
-      elseif cp >= 0x4E00 and cp < 0xA000 then counts.han = counts.han + 1 end
-    end
-    for _ in string.gmatch(s, "[\208\209][\128-\191]") do counts.cyr = counts.cyr + 1 end
-  end
-  if counts.kana > 0 then return "ja" end
-  if counts.hangul > 0 then return "ko" end
-  if counts.han > 0 then return "zh-Hans" end
-  if counts.cyr > 0 then return "ru" end
   return nil
 end
 
@@ -952,12 +934,8 @@ function MOM.check_translations(seconds)
       elseif n == 0 then
         MOM.drop_translations(tail, "the translation pack has nothing for it")
       else
-        local texts = {}
-        for _, v in pairs(out) do texts[#texts + 1] = v end
-        local tag = MOM.script_tag(texts)
-        if tag == nil then
-          say(tail .. ": " .. n .. " translation(s) from a translation pack, in a language not told by its script: not written")
-        else
+        local tag = "game"                           -- the window reads the game's language
+        do
           local text = MOM.json({ [tag] = out }) .. "\n"
           local path = MOM.dir .. tail .. "_translations.json"
           local okr, f = pcall(io.open, path, "rb")

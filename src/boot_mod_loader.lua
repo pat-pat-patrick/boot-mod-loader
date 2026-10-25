@@ -33,7 +33,7 @@
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.9.0"
+local MARKER = "boot-mod-loader-0.10.0"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -552,7 +552,7 @@ end
 -- back at once (such a mod asks every frame) and are never hidden from it
 -- again. The notes are in boot_mod_loader_native.txt: "<name> TAB next | yes
 -- | no", and "<name> TAB id TAB <list> TAB <id>" for the values.
-MOM.NOTES, MOM.WAIT, MOM.features, MOM.watch = "boot_mod_loader_native.txt", 10, {}, {}
+MOM.NOTES, MOM.WAIT, MOM.features, MOM.watch, MOM.menu_aware = "boot_mod_loader_native.txt", 10, {}, {}, {}
 
 function MOM.notes()
   if MOM.noted ~= nil then return MOM.noted end
@@ -635,6 +635,7 @@ function MOM.hide_from(name, source)
   local tail = string.match(name or "", "([%w_]+)$")
   if tail == nil or MOM.dir == nil or type(source) ~= "string" then return false end
   if not string.find(source, "ModOptionsMenu", 1, true) and not string.find(source, "ModBindingsMenu", 1, true) then return false end
+  MOM.menu_aware[tail] = true
   MOM.features[tail] = string.find(source, tail .. "_options.json", 1, true) ~= nil
     and string.find(source, tail .. "_settings.txt", 1, true) ~= nil
     and string.find(source, '"settings"%s*:%s*"' .. tail .. '_settings%.txt"') ~= nil
@@ -656,6 +657,350 @@ function MOM.hide_from(name, source)
     .. (carried > 0 and ("; " .. carried .. " value(s) set through the menus carried over to " .. tail .. "_settings.txt") or "")
     .. "; the menus come back if its list does not appear within " .. MOM.WAIT .. " s")
   return true
+end
+
+-- ------------------------------------------------------------ translation packs for mods with their own list
+
+-- (0.10.0, the user, 10-25: "让别人做的 MOM 式翻译包对原生窗口的 mod 继续生效") A
+-- translation pack made for Mod Options Menu (ActionCam简体中文, Nexus 16887)
+-- wraps ModOptionsMenu.register_option / ModBindingsMenu.register_binding and
+-- swaps the texts of its mod's registrations. A mod that uses its own window
+-- list never registers, so the pack translates nothing. When a pack has
+-- wrapped either function, the loader rehearses each such mod's settings
+-- through the wrappers once a launch, as the mod would have registered them
+-- with the menus (id "<prefix>.<key>", label, description, choices, mod =
+-- the list's title; key settings through register_binding). In a rehearsal
+-- the loader's own functions only note the texts they receive: nothing is
+-- registered and no list is written. Texts that came back changed are the
+-- pack's translations: <name>_translations.json, the window's "translations"
+-- tables ({"<tag>": {"title", "<key>", "<key>.hint", "<key>.<n>"}}), written
+-- only when it differs. Its language: the game's own setting is in a file
+-- whose name holds the account (saves\<hex>_user_settings.config) and the
+-- loader cannot list a folder, so the tag comes from the translated texts'
+-- script (Han zh-Hans, kana ja, hangul ko, Cyrillic ru); in another script
+-- nothing is written (logged). Files this loader wrote are listed in
+-- boot_mod_loader_translations.txt; one whose pack is gone is removed.
+MOM.TRANSLATIONS, MOM.TRANSLATE_WAIT = "boot_mod_loader_translations.txt", 30
+
+-- JSON text -> Lua value (objects and arrays as tables; null as nil); nil on
+-- an error. Enough for the window's lists.
+function MOM.parse_json(text)
+  local at = 1
+  local value
+  local function ws() at = string.find(text, "[^ \t\r\n]", at) or #text + 1 end
+  local function str()
+    local out = {}
+    at = at + 1
+    while true do
+      local c = string.sub(text, at, at)
+      if c == "" then error("unterminated string") end
+      if c == '"' then at = at + 1 break end
+      if c == "\\" then
+        local e = string.sub(text, at + 1, at + 1)
+        if e == "u" then
+          local n = tonumber(string.sub(text, at + 2, at + 5), 16) or 63
+          if n >= 0xD800 and n <= 0xDBFF and string.sub(text, at + 6, at + 7) == "\\u" then
+            local lo = tonumber(string.sub(text, at + 8, at + 11), 16) or 0
+            n = 0x10000 + (n - 0xD800) * 0x400 + (lo - 0xDC00)
+            at = at + 6
+          end
+          if n < 0x80 then out[#out + 1] = string.char(n)
+          elseif n < 0x800 then out[#out + 1] = string.char(0xC0 + math.floor(n / 64), 0x80 + n % 64)
+          elseif n < 0x10000 then out[#out + 1] = string.char(0xE0 + math.floor(n / 4096), 0x80 + math.floor(n / 64) % 64, 0x80 + n % 64)
+          else out[#out + 1] = string.char(0xF0 + math.floor(n / 262144), 0x80 + math.floor(n / 4096) % 64,
+                                            0x80 + math.floor(n / 64) % 64, 0x80 + n % 64) end
+          at = at + 6
+        else
+          out[#out + 1] = ({ n = "\n", t = "\t", r = "\r", b = "\b", f = "\f" })[e] or e
+          at = at + 2
+        end
+      else
+        local s, e2 = string.find(text, '^[^"\\]+', at)
+        out[#out + 1] = string.sub(text, s, e2)
+        at = e2 + 1
+      end
+    end
+    return table.concat(out)
+  end
+  function value()
+    ws()
+    local c = string.sub(text, at, at)
+    if c == "{" then
+      local t = {}
+      at = at + 1
+      ws()
+      if string.sub(text, at, at) == "}" then at = at + 1 return t end
+      while true do
+        ws()
+        if string.sub(text, at, at) ~= '"' then error("key expected") end
+        local k = str()
+        ws()
+        if string.sub(text, at, at) ~= ":" then error(": expected") end
+        at = at + 1
+        t[k] = value()
+        ws()
+        local d = string.sub(text, at, at)
+        at = at + 1
+        if d == "}" then return t end
+        if d ~= "," then error(", expected") end
+      end
+    elseif c == "[" then
+      local t, n = {}, 0
+      at = at + 1
+      ws()
+      if string.sub(text, at, at) == "]" then at = at + 1 return t end
+      while true do
+        n = n + 1
+        t[n] = value()
+        ws()
+        local d = string.sub(text, at, at)
+        at = at + 1
+        if d == "]" then return t end
+        if d ~= "," then error(", expected") end
+      end
+    elseif c == '"' then
+      return str()
+    elseif string.sub(text, at, at + 3) == "true" then at = at + 4 return true
+    elseif string.sub(text, at, at + 4) == "false" then at = at + 5 return false
+    elseif string.sub(text, at, at + 3) == "null" then at = at + 4 return nil
+    end
+    local s, e = string.find(text, "^-?%d+%.?%d*[eE]?[-+]?%d*", at)
+    if s == nil then error("unexpected " .. c) end
+    at = e + 1
+    return tonumber(string.sub(text, s, e))
+  end
+  local ok, v = pcall(value)
+  if ok then return v end
+  return nil
+end
+
+-- A text of a window list in English: a string, { en, ... } or { en = ... }.
+local function english(v)
+  if type(v) == "string" then return v end
+  if type(v) == "table" then
+    if type(v.en) == "string" then return v.en end
+    if type(v[1]) == "string" then return v[1] end
+  end
+  return nil
+end
+
+-- The language tag of translated texts, from their script; nil when not told.
+function MOM.script_tag(texts)
+  local counts = { han = 0, kana = 0, hangul = 0, cyr = 0 }
+  for _, s in ipairs(texts) do
+    for c in string.gmatch(s, "[\224-\239][\128-\191][\128-\191]") do
+      local b1, b2 = string.byte(c, 1, 2)
+      local cp = (b1 - 224) * 4096 + (b2 - 128) * 64
+      if cp >= 0x3040 and cp < 0x3100 then counts.kana = counts.kana + 1
+      elseif cp >= 0xAC00 and cp < 0xD7B0 then counts.hangul = counts.hangul + 1
+      elseif cp >= 0x4E00 and cp < 0xA000 then counts.han = counts.han + 1 end
+    end
+    for _ in string.gmatch(s, "[\208\209][\128-\191]") do counts.cyr = counts.cyr + 1 end
+  end
+  if counts.kana > 0 then return "ja" end
+  if counts.hangul > 0 then return "ko" end
+  if counts.han > 0 then return "zh-Hans" end
+  if counts.cyr > 0 then return "ru" end
+  return nil
+end
+
+-- Which of the two functions a pack has wrapped: the current function and
+-- its source, or nil when the loader's own is still in place.
+function MOM.wrapped()
+  local out = {}
+  local mom, mbm = rawget(_G, "ModOptionsMenu"), rawget(_G, "ModBindingsMenu")
+  if MOM.api_register ~= nil and type(mom) == "table" and rawget(mom, "register_option") ~= MOM.api_register
+     and type(rawget(mom, "register_option")) == "function" then out.option = rawget(mom, "register_option") end
+  if MOM.mbm_register ~= nil and type(mbm) == "table" and rawget(mbm, "register_binding") ~= MOM.mbm_register
+     and type(rawget(mbm, "register_binding")) == "function" then out.binding = rawget(mbm, "register_binding") end
+  if out.option == nil and out.binding == nil then return nil end
+  return out
+end
+
+-- The names of the translation files this loader wrote (its index), read once.
+function MOM.translation_index()
+  if MOM.tr_index ~= nil then return MOM.tr_index end
+  MOM.tr_index = {}
+  local ok, f = pcall(io.open, MOM.dir .. MOM.TRANSLATIONS, "rb")
+  if ok and f ~= nil then
+    local _, text = pcall(f.read, f, "*a")
+    pcall(f.close, f)
+    for name in string.gmatch(text or "", "[^\r\n]+") do
+      if string.find(name, "^[%w_]+$") then MOM.tr_index[name] = true end
+    end
+  end
+  return MOM.tr_index
+end
+
+function MOM.save_translation_index()
+  local names = {}
+  for name in pairs(MOM.translation_index()) do names[#names + 1] = name end
+  table.sort(names)
+  local ok, w = pcall(io.open, MOM.dir .. MOM.TRANSLATIONS, "wb")
+  if ok and w ~= nil then
+    pcall(w.write, w, table.concat(names, "\n") .. (names[1] and "\n" or ""))
+    pcall(w.close, w)
+  end
+end
+
+-- A translation file of this loader's whose pack translates nothing now: gone.
+function MOM.drop_translations(tail, why)
+  if not MOM.translation_index()[tail] then return end
+  local path = MOM.dir .. tail .. "_translations.json"
+  local gone = type(os) == "table" and type(os.remove) == "function" and pcall(os.remove, path)
+  if not gone then
+    local ok, w = pcall(io.open, path, "wb")
+    if ok and w ~= nil then pcall(w.write, w, "{}\n") pcall(w.close, w) end
+  end
+  MOM.tr_index[tail] = nil
+  MOM.save_translation_index()
+  say(tail .. ": " .. tail .. "_translations.json " .. (gone and "removed" or "emptied") .. " (" .. why .. ")")
+end
+
+-- What a rehearsed registration received, by id.
+function MOM.rehearse(id, spec)
+  if type(id) == "string" and type(spec) == "table" then
+    local choices = nil
+    if type(spec.choices) == "table" then
+      choices = {}
+      for i, c in ipairs(spec.choices) do choices[i] = MOM.text(c, 400) end
+    end
+    MOM.rehearsal[id] = { label = MOM.text(spec.label, 400), description = MOM.text(spec.description, 2000),
+                          choices = choices, mod = MOM.text(spec.mod, 200) }
+  end
+  return true
+end
+
+function MOM.rehearse_binding(id, label)
+  if type(id) == "string" then MOM.rehearsal[id] = { label = MOM.text(label, 400) } end
+  return true
+end
+
+-- One mod's settings rehearsed through the wrappers: its translations, by
+-- the window's "<what>" names, and how many; nil when its list is not there.
+function MOM.translate_one(tail, wrapped)
+  local ok, f = pcall(io.open, MOM.dir .. tail .. "_options.json", "rb")
+  if not ok or f == nil then return nil end
+  local _, text = pcall(f.read, f, "*a")
+  pcall(f.close, f)
+  local list = type(text) == "string" and MOM.parse_json(text) or nil
+  if type(list) ~= "table" or type(list.options) ~= "table" or list.stale == true then return nil end
+  -- the prefix of its ids: from the ids noted when it registered with the
+  -- menus (0.8.0), else its addon name (ActionCam: "actioncam")
+  local prefix = tail
+  for _, x in ipairs(MOM.notes().ids[tail] or {}) do
+    prefix = string.match(x.id, "^([^%.]+)%.") or prefix
+    break
+  end
+  local title = english(list.title) or tail
+  local out, n = {}, 0
+  MOM.rehearsal = {}
+  local asked = {}
+  for _, o in ipairs(list.options) do
+    if type(o) == "table" and type(o.key) == "string" then
+      local name = english(o.name) or (type(o.en) == "table" and o.en[1]) or nil
+      local hint = english(o.hint) or (type(o.en) == "table" and o.en[2]) or nil
+      local choices = {}
+      if type(o.choices) == "table" then for i, c in ipairs(o.choices) do choices[i] = english(c) or "" end end
+      local id = prefix .. "." .. o.key
+      if name ~= nil then
+        if o.type == "key" then
+          if wrapped.binding then pcall(wrapped.binding, id, name, nil, {}) end
+        elseif o.type == "toggle" or o.type == "choice" or o.type == "slider" then
+          if wrapped.option then
+            pcall(wrapped.option, id, { type = o.type, label = name, description = hint ~= "" and hint or nil,
+                                        choices = o.type == "choice" and choices or nil, mod = title,
+                                        min = o.min, max = o.max, step = o.step, default = o.default })
+          end
+        end
+        asked[#asked + 1] = { o = o, id = id, name = name, hint = hint, choices = choices }
+      end
+    end
+  end
+  local got = MOM.rehearsal
+  MOM.rehearsal = nil
+  for _, a in ipairs(asked) do
+    local r = got[a.id]
+    if r ~= nil then
+      if r.label ~= nil and r.label ~= a.name then out[a.o.key], n = r.label, n + 1 end
+      if r.description ~= nil and a.hint ~= nil and r.description ~= a.hint then out[a.o.key .. ".hint"], n = r.description, n + 1 end
+      if r.choices ~= nil then
+        for i, c in ipairs(a.choices) do
+          if r.choices[i] ~= nil and r.choices[i] ~= c then out[a.o.key .. "." .. i], n = r.choices[i], n + 1 end
+        end
+      end
+      if out.title == nil and r.mod ~= nil and r.mod ~= title then out.title, n = r.mod, n + 1 end
+    end
+  end
+  return out, n
+end
+
+-- Each loaded mod with its own list, once its list is there (at most
+-- MOM.TRANSLATE_WAIT seconds): rehearsed, its translations written or dropped.
+function MOM.check_translations(seconds)
+  local wrapped = MOM.wrapped()
+  local left = {}
+  for tail in pairs(MOM.translate_todo) do
+    if wrapped == nil then
+      MOM.drop_translations(tail, "no translation pack wraps the menus")
+    else
+      MOM.natives[tail] = nil
+      local out, n = nil, 0
+      if next(MOM.native(tail)) ~= nil then out, n = MOM.translate_one(tail, wrapped) end
+      if out == nil then
+        left[tail] = true
+      elseif n == 0 then
+        MOM.drop_translations(tail, "the translation pack has nothing for it")
+      else
+        local texts = {}
+        for _, v in pairs(out) do texts[#texts + 1] = v end
+        local tag = MOM.script_tag(texts)
+        if tag == nil then
+          say(tail .. ": " .. n .. " translation(s) from a translation pack, in a language not told by its script: not written")
+        else
+          local text = MOM.json({ [tag] = out }) .. "\n"
+          local path = MOM.dir .. tail .. "_translations.json"
+          local okr, f = pcall(io.open, path, "rb")
+          local old = nil
+          if okr and f ~= nil then old = select(2, pcall(f.read, f, "*a")) pcall(f.close, f) end
+          if old ~= text then
+            local okw, w = pcall(io.open, path, "wb")
+            if okw and w ~= nil then pcall(w.write, w, text) pcall(w.close, w) end
+          end
+          if not MOM.translation_index()[tail] then
+            MOM.tr_index[tail] = true
+            MOM.save_translation_index()
+          end
+          local from = {}
+          for what, fn in pairs(wrapped) do
+            local oki, info = false, nil
+            if type(debug) == "table" and type(debug.getinfo) == "function" then oki, info = pcall(debug.getinfo, fn, "S") end
+            from[#from + 1] = "register_" .. what .. " in " .. ((oki and info and info.source) or "?")
+          end
+          table.sort(from)
+          say(string.format("%s: %d translation(s) (%s) from a translation pack (%s) -> %s_translations.json%s", tail, n, tag,
+            table.concat(from, ", "), tail, old == text and " (unchanged)" or ""))
+        end
+      end
+    end
+  end
+  MOM.translate_wait = MOM.translate_wait - seconds
+  if next(left) ~= nil and MOM.translate_wait > 0 then MOM.translate_todo = left else MOM.translate_todo = {} end
+end
+
+-- Once the mods have started: the mods with their own list (or one of this
+-- loader's translation files) to rehearse or clean up.
+function MOM.plan_translations(mods)
+  MOM.translate_todo, MOM.translate_wait = {}, MOM.TRANSLATE_WAIT
+  if MOM.dir == nil then return end
+  local any = MOM.wrapped() ~= nil
+  for _, entry in ipairs(mods or {}) do
+    local tail = entry.state == "loaded" and string.match(entry.name or "", "([%w_]+)$") or nil
+    if tail ~= nil and MOM.menu_aware[tail] and (any or MOM.translation_index()[tail]) then
+      MOM.translate_todo[tail] = true
+    end
+  end
+  for tail in pairs(MOM.translation_index()) do MOM.translate_todo[tail] = true end
 end
 
 -- Once a second while a mod is watched: its own list appeared (it uses the
@@ -1077,6 +1422,7 @@ function MOM.tick(dt)
   if MOM.at > 0 then return end
   MOM.at = MOM.every
   if next(MOM.watch) ~= nil or MOM.notes_dirty then pcall(MOM.check_watch, MOM.every) end
+  if MOM.translate_todo ~= nil and next(MOM.translate_todo) ~= nil then pcall(MOM.check_translations, MOM.every) end
   for _, g in ipairs(MOM.list) do
     local ok, err = pcall(MOM.tick_group, g)
     if not ok and not g.said then
@@ -1090,7 +1436,8 @@ end
 -- The game's update, wrapped once, only when a mod registered an option and
 -- the mods have loaded (a mod that registers later gets it then).
 function L.hook_update()
-  if L.update_hooked or not L.started_done or (MOM.list[1] == nil and next(MOM.watch) == nil and not MOM.notes_dirty)
+  if L.update_hooked or not L.started_done or (MOM.list[1] == nil and next(MOM.watch) == nil and not MOM.notes_dirty
+     and (MOM.translate_todo == nil or next(MOM.translate_todo) == nil))
      or MOM.dir == nil then return end
   L.update_hooked = true
   local previous = rawget(_G, "update")
@@ -1418,6 +1765,7 @@ MBB.api = {
   loader = MARKER, window = "HD2 Mod Setting GUI",
   extended = { devices = { "keyboard", "mouse" }, triggers = { "press", "release", "hold" }, count = 0 },
   register_binding = function(id, label, slot, options)
+    if MOM.rehearsal then return MOM.rehearse_binding(id, label) end      -- a translation pack rehearsed
     local ok, done, why = pcall(MBB.register, id, label, slot, options)
     if not ok then return false, tostring(done) end
     return done, why
@@ -1470,6 +1818,7 @@ if rawget(_G, "ModOptionsMenu") == nil then
     version = 3, max_mods = MOM.MAX_MODS, max_options = MOM.MAX_OPTIONS,
     revision = MARKER, window = "HD2 Mod Setting GUI",
     register_option = function(id, spec)
+      if MOM.rehearsal then return MOM.rehearse(id, spec) end             -- a translation pack rehearsed
       local ok, done, why = pcall(MOM.register, id, spec)
       if not ok then return false, tostring(done) end
       return done, why
@@ -1485,9 +1834,11 @@ if rawget(_G, "ModOptionsMenu") == nil then
     end,
     ready = function() return true end,
   }, API))
+  MOM.api_register = rawget(rawget(_G, "ModOptionsMenu"), "register_option")   -- the loader's own, to tell a wrapper
 end
 if rawget(_G, "ModBindingsMenu") == nil then
   rawset(_G, "ModBindingsMenu", MBB.api)
+  MOM.mbm_register = rawget(MBB.api, "register_binding")
 end
 
 local function check_game_version()
@@ -1573,6 +1924,8 @@ local function start()
     if not ran then say("after_startup: " .. tostring(why)) end
   end
   local swept, why = pcall(MOM.sweep, list)
+  local planned, why2 = pcall(MOM.plan_translations, list)
+  if not planned then say("translation packs: " .. tostring(why2)) end
   if not swept then say("settings window lists: " .. tostring(why)) end
   local loaded = 0
   for _, entry in ipairs(list) do if entry.state == "loaded" then loaded = loaded + 1 end end

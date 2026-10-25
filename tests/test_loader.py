@@ -649,6 +649,76 @@ def check_no_menu_limits(source, failures):
         shutil.rmtree(root, ignore_errors=True)
 
 
+# A mod with its own window list that still names the menus (it checks for them, as ActionCam does).
+NATIVE2 = ("-- HD2-Addon: mods/test/native2\n"
+           "-- uses ModOptionsMenu only when it is a real menu; writes native2_options.json itself\n"
+           "local dir = os.getenv('APPDATA') .. '/Arrowhead/Helldivers2/'\n"
+           "local o = io.open(dir .. 'native2_options.json', 'w')\n"
+           "o:write('{\"title\":\"Native Two\",\"settings\":\"native2_settings.txt\",\"options\":['\n"
+           "  .. '{\"key\":\"speed\",\"type\":\"slider\",\"min\":0,\"max\":10,\"name\":\"Speed\",\"hint\":\"How fast\"},'\n"
+           "  .. '{\"key\":\"mode\",\"type\":\"choice\",\"name\":\"Mode\",\"choices\":[\"Slow\",\"Fast\"]},'\n"
+           "  .. '{\"key\":\"jump\",\"type\":\"key\",\"name\":\"Jump\"},'\n"
+           "  .. '{\"key\":\"other\",\"type\":\"toggle\",\"name\":\"Untranslated\"}]}' .. '\\n')\n"
+           "o:close()\n")
+
+# A translation pack made for the menus: wraps both functions and swaps its mod's texts.
+PACK = ("-- HD2-Addon: mods/test/native2_zh\n"
+        "local words = { ['Native Two'] = '原生二号', Speed = '速度', ['How fast'] = '有多快', Slow = '慢', Fast = '快', Jump = '跳' }\n"
+        "local M, B = rawget(_G, 'ModOptionsMenu'), rawget(_G, 'ModBindingsMenu')\n"
+        "local option, binding = M.register_option, B.register_binding\n"
+        "M.register_option = function(id, spec)\n"
+        "  if type(spec) == 'table' and string.find(id, '^native2%.') then\n"
+        "    spec.label = words[spec.label] or spec.label\n"
+        "    spec.description = words[spec.description] or spec.description\n"
+        "    spec.mod = words[spec.mod] or spec.mod\n"
+        "    if spec.choices then local c = {} for i, v in ipairs(spec.choices) do c[i] = words[v] or v end spec.choices = c end\n"
+        "  end\n"
+        "  return option(id, spec)\n"
+        "end\n"
+        "B.register_binding = function(id, label, ...)\n"
+        "  if string.find(id, '^native2%.') then label = words[label] or label end\n"
+        "  return binding(id, label, ...)\n"
+        "end\n")
+
+
+def check_translation_pack(source, failures):
+    """A translation pack made for the menus reaches a mod with its own window list: the mod's settings
+    are rehearsed through the pack's wrappers (nothing registered) and the changed texts are written as
+    <name>_translations.json under "game"; removed when the pack is gone."""
+    import json
+    root = tempfile.mkdtemp(prefix="bootloader_")
+    try:
+        fake_game(root, {1: ("mods/test/native2", NATIVE2, 2), 2: ("mods/test/native2_zh", PACK, 2),
+                         3: ("mods/test/cam", CAM, 2)})
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+
+        def launch():
+            rt = runtime(root, CHECKED)
+            rt.execute(ENGINE)
+            rt.eval("loadstring")(source, "=boot")()
+            rt.execute("init()")
+            for _ in range(3):
+                rt.execute("update(0.5)")
+            log = open(os.path.join(app, "boot_mod_loader.log"), encoding="utf-8").read()
+            return rt, log[log.rfind("== boot-mod-loader"):]
+
+        rt, log = launch()
+        path = os.path.join(app, "native2_translations.json")
+        tr = json.load(open(path, encoding="utf-8")) if os.path.exists(path) else {}
+        ok(tr == {"game": {"title": "原生二号", "speed": "速度", "speed.hint": "有多快", "mode.1": "慢", "mode.2": "快",
+                           "jump": "跳"}},
+           "the pack's texts for the mod's own list, under \"game\": %r" % tr, failures)
+        ok("native2: 6 translation(s) (game) from a translation pack" in log and rt.eval("R1") is True
+           and not any(n.startswith(("mom_native2", "mbm_native2")) for n in os.listdir(app)),
+           "logged; nothing registered for it; the ordinary menu mod untouched", failures)
+        os.remove(os.path.join(root, "game", "data", "9ba626afa44a3aa3.patch_2"))
+        rt, log = launch()
+        ok(not os.path.exists(path) and "native2_translations.json removed" in log,
+           "without the pack: the file removed", failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def check(source):
     """Run the loader source on Lua 5.1 in a fake game; return the failures."""
     failures = []
@@ -725,6 +795,7 @@ def check(source):
         check_own_list(source, failures)
         check_second_launch(source, failures)
         check_no_menu_limits(source, failures)
+        check_translation_pack(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

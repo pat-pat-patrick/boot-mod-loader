@@ -25,7 +25,7 @@ use. It needs no settings.
 
 For the settings of mods made for Mod Options Menu and Mod Bindings Menu, use
 [HD2 Mod Setting GUI](https://github.com/pat-pat-patrick/hd2-mod-setting-gui)
-**1.10.1 or newer**.
+**1.12.0 or newer**.
 
 - Its log is `%APPDATA%\Arrowhead\Helldivers2\boot_mod_loader.log`. The log
   lists the archives read, every mod found, and whether each mod loaded, did not
@@ -169,6 +169,29 @@ candidates are the lists the loader wrote before (its index,
 game's Lua has no `os.rename`, the list is emptied and marked
 `{"stale": true}` instead, which the window skips from 1.10.1.
 
+**Translation packs.** A translation pack made for Mod Options Menu wraps
+`register_option` and `register_binding` and swaps its mod's texts as they
+are registered. A mod that uses its own window list never registers, so such
+a pack would translate nothing. When a pack has wrapped either function, the
+loader does this once a launch for each mod with its own list:
+
+1. It rehearses the mod's settings through the wrappers, as the mod would have
+   registered them with the menus: id `<prefix>.<key>`, the English name,
+   hint and choices, `mod` = the list's title; key settings through
+   `register_binding`.
+2. In a rehearsal the loader's own functions only note the texts they get:
+   nothing is registered and no list is written.
+3. The texts that came back changed are the pack's translations. They are
+   written as `<name>_translations.json`, in the window's `translations`
+   form, under the tag `"game"`: a pack translates into the language the
+   player plays in, and the window reads the game's language setting (the
+   loader cannot find that file without listing a folder). The file is
+   rewritten only when it changes.
+4. When the pack is gone, the file is removed. The loader removes only files
+   it wrote (its index, `boot_mod_loader_translations.txt`).
+
+The window uses these translations from 1.12.0, after the mod's own ones.
+
 ### Mod Bindings Menu
 
 When no other mod defines it, the loader also sets `_G.ModBindingsMenu` before
@@ -238,7 +261,11 @@ runs, against a fake game folder of real patch archives. It covers these cases:
   its own settings file (`get`, `on_change`, `set`, keys).
 - a mod that supports both, over three launches: the menus first (noted), then
   its own list with the values carried over; one that only looks like it gets
-  the menus back after 10 s and is not hidden again.
+  the menus back after 10 s and is not hidden again;
+- no menu tab limits: 40 options of a mod all listed, the guards reported;
+- a translation pack made for the menus and a mod with its own list: the
+  pack's texts written under `"game"`, nothing registered, the file removed
+  when the pack is gone.
 
 ## Credits
 

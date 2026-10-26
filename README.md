@@ -30,8 +30,15 @@ For the settings of mods made for Mod Options Menu and Mod Bindings Menu, use
 - Its log is `%APPDATA%\Arrowhead\Helldivers2\boot_mod_loader.log`. The log
   lists the archives read, every mod found, and whether each mod loaded, did not
   compile, or failed (with a traceback).
-- **Only one mod can replace `boot`.** Do not install a second loader that does
-  the same.
+- **Only one mod can replace `boot`.** The game runs one `boot`: the one in the
+  highest patch. Boot Mod Loader's must be that one. Two cases are handled
+  (see "Other loaders and boots" below):
+  - **Chef Shared Loader** may be installed beside it: mods made only for Chef
+    are handed to Chef, which then runs inside Boot Mod Loader.
+  - **A mod that ships its own `boot`** but is not a loader (Objective Tracker
+    0.6.7) runs as a guest when the mod manager has moved its `boot` aside.
+    [HD2 Mod Quick Deploy](https://github.com/pat-pat-patrick/hd2-mod-cli) does
+    this; with other managers such a mod still takes the slot.
 - After a game update the log says either `game version: ... (Steam build
   ...)` or `NOT THIS GAME VERSION`. The second means the loader's copy of the
   game's `boot` script was not checked on that build. Mods still start, because
@@ -46,6 +53,51 @@ For the settings of mods made for Mod Options Menu and Mod Bindings Menu, use
 - A mod written for LuaJIT does not run on this game, loader or not. That
   includes mods that use `ffi` to read game memory, mods that use the `bit`
   library, and mods that use `goto`. The log says which mods failed and why.
+
+## Other loaders and boots
+
+### Mods made for Chef Shared Loader
+
+A mod made only for [Chef Shared Loader](https://github.com/Th3chef/Chef-Shared-Loader)
+is not run by Boot Mod Loader. It counts as one when, in its first 1200 bytes,
+it declares `-- HD2-Requires: chef-shared-loader`, or takes `local chef = ...`
+and uses `chef` without checking that it is there.
+
+When Chef Shared Loader's core is deployed (its archive is in the game folder),
+Boot Mod Loader hands those mods to it, after every other mod has started, as
+Chef's `docs/MODDING.md` ("For other loaders") describes:
+
+1. It sets `ChefSharedLoaderHandoff = { from = "Boot Mod Loader <version>", phase = "init" }`
+   and runs Chef's core from its archive.
+2. Chef starts only the mods that are not started yet. A mod that failed here
+   is marked in `package.loaded`, so Chef does not start it again.
+3. Chef takes over no callbacks: it runs as one link in `update`, `render` and
+   `shutdown`, before the chain below it, under the name
+   `mods/chef_shared_loader/chef_shared_loader` (so per-mod timers such as Mod
+   Lag Watchdog can name it and measure the chain below).
+4. Chef sets its own Mod Options Menu and Mod Bindings Menu only when none
+   exist, so the settings of the mods started here stay in the settings window.
+
+Without Chef's core, the log names those mods and they are not started. Boot
+Mod Loader's `boot` must still be the one that runs (a higher patch than
+Chef's). Checked with Chef Shared Loader 1.2.1 in game.
+
+### Guest boots
+
+The game runs one `boot`. A mod that is not a loader but ships its own `boot`
+(Objective Tracker 0.6.7) would take that slot from the loader. HD2 Mod Quick
+Deploy moves such a `boot` aside when it deploys. In the game folder's copy of
+the archive, it renames that row to `guest_boot/<mod name>` and adds the first
+line `-- HD2-Guest-Boot: <mod name>`; the mod's own files are not changed.
+
+Boot Mod Loader runs each guest boot after the mods have started:
+
+- the highest patch wins for a name; a guest is not counted with the mods;
+- its `init` is called; its `update`, `render` and `shutdown` run as its own
+  link before the chain below, under the name `guest_boot/<mod name>`;
+- the first 5 errors are logged; after 50 the guest stops for that launch.
+
+Another mod manager can do the same: rename the row and add that first line.
 
 ## For mod authors
 
@@ -265,7 +317,11 @@ runs, against a fake game folder of real patch archives. It covers these cases:
 - no menu tab limits: 40 options of a mod all listed, the guards reported;
 - a translation pack made for the menus and a mod with its own list: the
   pack's texts written under `"game"`, nothing registered, the file removed
-  when the pack is gone.
+  when the pack is gone;
+- guest boots: loaded once (the highest patch), `init` once, their own named
+  link before the chain, five errors logged and stopped after 50;
+- the hand-off to Chef Shared Loader, with and without its core: which mods it
+  gets, its note, its one named link, `init` once, `shutdown` order.
 
 ## Credits
 

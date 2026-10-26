@@ -719,6 +719,164 @@ def check_translation_pack(source, failures):
         shutil.rmtree(root, ignore_errors=True)
 
 
+GUEST = ("-- HD2-Guest-Boot: Tracker\n"
+         "GUEST_LOADS = (GUEST_LOADS or 0) + 1\n"
+         "function init() GUEST_INITS = (GUEST_INITS or 0) + 1 end\n"
+         "function update(dt) GUEST_UPDATES = (GUEST_UPDATES or 0) + 1 if GUEST_FAIL then error('guest boom') end end\n"
+         "function render() GUEST_RENDERS = (GUEST_RENDERS or 0) + 1 end\n"
+         "function shutdown() ORDER = ORDER .. 'guest,' end\n")
+
+
+def check_guest_boot(source, failures):
+    """0.12.0: a boot the mod manager took off the slot ("-- HD2-Guest-Boot:") runs as a guest:
+    loaded once after the mods, its init called, its update/render/shutdown after the chain,
+    the chain itself kept; errors logged five times, stopped after 50; the highest patch wins;
+    an undeclared script is not run; init twice starts it once."""
+    root = tempfile.mkdtemp(prefix="bootloader_guest_")
+    try:
+        fake_game(root, {1: MODS[1],
+                         3: ("guest_boot/old", GUEST.replace("GUEST_LOADS = (GUEST_LOADS or 0) + 1", "OLD_GUEST = true"), 2),
+                         5: ("guest_boot/Tracker", GUEST, 2),
+                         6: ("plain_boot", "PLAIN_BOOT_RAN = true\nfunction update() PLAIN_UPDATE = true end\n", 2)})
+        # patch_3 and patch_5 both name the guest "Tracker": the patch_5 one runs
+        rt = runtime(root, CHECKED)
+        rt.execute("GAME_UPS = 0 update = function() GAME_UPS = GAME_UPS + 1 return 'u' end GAME_UPDATE = update")
+        rt.eval("loadstring")(source, "=boot")()
+        ok(rt.eval("GUEST_LOADS") is None, "guest: nothing before init", failures)
+        first = rt.eval("table.concat({ init() }, ',')")
+        rt.execute("init()")
+        log = open(os.path.join(root, "appdata", "Arrowhead", "Helldivers2", "boot_mod_loader.log"), encoding="utf-8").read()
+        ok(first == "game,7", "guest: the game's init results still come back: %r" % first, failures)
+        ok(rt.eval("GUEST_LOADS") == 1 and rt.eval("OLD_GUEST") is None, "guest: loaded once, the patch_5 copy", failures)
+        ok(rt.eval("GUEST_INITS") == 1, "guest: its init called once, init twice", failures)
+        ok(rt.eval("ALPHA_RAN") == 1 and "started 1 of 1 mods" in log, "guest: the mods start as before, not counted with them", failures)
+        ok("1 declared mods, 1 guest boot(s)" in log, "guest: counted apart: %r" % [l for l in log.splitlines() if "declared" in l], failures)
+        ok("guest boot Tracker (patch_5, " in log and "runs init, update, render, shutdown" in log, "guest: its log line", failures)
+        ok(rt.eval("PLAIN_BOOT_RAN") is None and rt.eval("PLAIN_UPDATE") is None, "guest: undeclared script not run", failures)
+        ok(rt.eval("rawequal(init, GAME_INIT_SEEN or init)") is True and rt.eval("GUEST_INITS") == 1,
+           "guest: init stays the loader's", failures)
+        r = rt.eval("update(0.016)")
+        ok(r == "u" and rt.eval("GAME_UPS") == 1 and rt.eval("GUEST_UPDATES") == 1,
+           "guest: update runs the guest, then the chain (its result kept): %r %r %r" % (r, rt.eval("GAME_UPS"), rt.eval("GUEST_UPDATES")), failures)
+        # Mod Lag Watchdog names a link by its source and follows its function upvalues:
+        # the guest's link is "guest_boot/<mod>" (its archive row's name) and holds only the chain
+        ok(rt.eval("debug.getinfo(update, 'S').source") == "@guest_boot/Tracker",
+           "guest: its link is named guest_boot/Tracker: %r" % rt.eval("debug.getinfo(update, 'S').source"), failures)
+        held = rt.eval("(function() local n, i = {}, 1 while true do local name, v = debug.getupvalue(update, i) "
+                       "if name == nil then break end if type(v) == 'function' then n[#n + 1] = name end i = i + 1 end "
+                       "return table.concat(n, ',') end)()")
+        ok(held == "previous", "guest: its link holds one function, the chain: %r" % held, failures)
+        rt.execute("pcall(render)")
+        ok(rt.eval("GUEST_RENDERS") == 1, "guest: render reaches it although the game had none", failures)
+        rt.execute("ORDER = '' shutdown()")
+        ok(rt.eval("ORDER") == "guest,game,", "guest: shutdown, then the game's: %r" % rt.eval("ORDER"), failures)
+        rt.execute("GUEST_FAIL = true for i = 1, 60 do update(0.016) end")
+        log = open(os.path.join(root, "appdata", "Arrowhead", "Helldivers2", "boot_mod_loader.log"), encoding="utf-8").read()
+        ok(log.count("guest boot Tracker: update failed") == 5 and "guest boot Tracker: stopped for this launch after 50 errors" in log,
+           "guest: five errors logged, stopped after 50", failures)
+        ok(rt.eval("GUEST_UPDATES") == 51 and rt.eval("GAME_UPS") == 61,
+           "guest: a stopped guest is not called; the game's update still is: %r %r" % (rt.eval("GUEST_UPDATES"), rt.eval("GAME_UPS")), failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+CHEF_MODS = {
+    1: ("mods/test/alpha", MODS[1][1], 2),
+    2: ("mods/test/narrow", "-- HD2-Addon: mods/test/narrow\nlocal chef = ...\nif type(chef.own_log) == 'function' then chef.own_log('n') end\nNARROW_RAN = true\n", 2),
+    3: ("mods/test/copes", "-- HD2-Addon: mods/test/copes\nlocal chef = ...\nif type(chef) ~= 'table' then COPES_QUIET = true return end\nCOPES_CHEF = true\n", 2),
+    4: ("mods/test/declared", "-- HD2-Addon: mods/test/declared\n-- HD2-Requires: chef-shared-loader\nDECLARED_RAN = true\n", 2),
+    5: ("mods/test/broken", MODS[2][1], 2),
+}
+# Chef Shared Loader's core, as far as the hand-off goes: what it was told, its argument, and what it would start.
+# Deployed as an archive (0.13.1: read from there; in game can_get said no at init), and the same as a require
+# preload for the case no archive holds it.
+CHEF_CORE_SRC = r"""
+  local via = ...
+  CHEF_VIA = via
+  local note = rawget(_G, 'ChefSharedLoaderHandoff')
+  CHEF_FROM, CHEF_PHASE = note and note.from, note and note.phase
+  local wants = {}
+  for _, e in ipairs(__boot_mod_loader.mods) do
+    if e.state ~= 'loaded' and package.loaded[e.name] == nil then wants[#wants + 1] = e.name end
+  end
+  CHEF_STARTS = table.concat(wants, ',')
+  CHEF_BROKEN_MARK = tostring(package.loaded['mods/test/broken'])
+  -- what Chef 1.2.1 does: keeps the callbacks it finds (to run after its own), then sets its own; with
+  -- phase init it calls its init itself
+  CHEF_FOUND = (rawget(_G, 'update') ~= nil) or (rawget(_G, 'render') ~= nil) or (rawget(_G, 'shutdown') ~= nil)
+  rawset(_G, 'ChefSharedLoader', {})
+  function init() CHEF_INITS = (CHEF_INITS or 0) + 1 end
+  function update(dt) CHEF_UPS = (CHEF_UPS or 0) + 1 end
+  function render() CHEF_RENDERS = (CHEF_RENDERS or 0) + 1 end
+  function shutdown() ORDER = ORDER .. 'chef,' end
+  if note and note.phase == 'init' then init() end
+  return true
+"""
+
+
+def check_chef_handoff(source, failures):
+    """0.13.0: a mod made for Chef Shared Loader (HD2-Requires, or local chef = ... used untested) is not run; with
+    Chef's core deployed, the loader hands off to it (its documented note, phase init) and Chef would start exactly
+    those; one that tests for chef runs here; a failed mod is marked so Chef does not start it again; without the
+    core the mods are named and left."""
+    root = tempfile.mkdtemp(prefix="bootloader_chef_")
+    try:
+        from build import write_module
+        fake_game(root, CHEF_MODS)
+        core = os.path.join(root, "game", "data", "9ba626afa44a3aa3.patch_6")
+        for here in (True, False):
+            if here:
+                write_module(os.path.join(root, "game", "data"), "mods/chef_shared_loader/core_1", CHEF_CORE_SRC, archive="9ba626afa44a3aa3.patch_6")
+            else:
+                for ext in ("", ".gpu_resources", ".stream"):
+                    if os.path.exists(core + ext): os.remove(core + ext)
+            rt = runtime(root, CHECKED)
+            # as in game: can_get says no, whether the core is there or not
+            rt.execute("stingray.Application.can_get = function(kind, name) return false end")
+            rt.execute("GAME_UPS = 0 update = function() GAME_UPS = GAME_UPS + 1 end GAME_UPDATE = update")
+            rt.eval("loadstring")(source, "=boot")()
+            rt.execute("init()")
+            log = open(os.path.join(root, "appdata", "Arrowhead", "Helldivers2", "boot_mod_loader.log"), encoding="utf-8").read()
+            log = log[log.rindex("== boot-mod-loader-"):]
+            tag = "chef here" if here else "no chef"
+            ok(rt.eval("NARROW_RAN") is None and rt.eval("DECLARED_RAN") is None,
+               "chef (%s): the mods made for it are not run here" % tag, failures)
+            ok(rt.eval("ALPHA_RAN") == 1 and rt.eval("COPES_QUIET") is True,
+               "chef (%s): the others run, one that tests for chef too" % tag, failures)
+            ok("started 2 of 3 mods" in log, "chef (%s): counted without them (alpha and copes; broken fails): %r" % (tag, [l for l in log.splitlines() if "started" in l]), failures)
+            if here:
+                # 0.13.2: Chef takes over no chain; it is one link, named for Mod Lag Watchdog
+                ok(rt.eval("CHEF_FOUND") is False, "chef: it found no callbacks to take over", failures)
+                ok(rt.eval("debug.getinfo(update, 'S').source") == "@mods/chef_shared_loader/chef_shared_loader"
+                   and rt.eval("debug.getinfo(render, 'S').source") == "@mods/chef_shared_loader/chef_shared_loader",
+                   "chef: its link is named chef_shared_loader: %r" % rt.eval("debug.getinfo(update, 'S').source"), failures)
+                held = rt.eval("(function() local n, i = {}, 1 while true do local name, v = debug.getupvalue(update, i) "
+                               "if name == nil then break end if type(v) == 'function' then n[#n + 1] = name end i = i + 1 end "
+                               "return table.concat(n, ',') end)()")
+                ok(held == "previous", "chef: its link holds one function, the chain: %r" % held, failures)
+                rt.execute("update(0.016) update(0.016) pcall(render)")
+                ok(rt.eval("CHEF_UPS") == 2 and rt.eval("GAME_UPS") == 2 and rt.eval("CHEF_RENDERS") == 1 and rt.eval("CHEF_INITS") == 1,
+                   "chef: its update and render run, the chain's too, its init once: %r %r %r %r"
+                   % (rt.eval("CHEF_UPS"), rt.eval("GAME_UPS"), rt.eval("CHEF_RENDERS"), rt.eval("CHEF_INITS")), failures)
+                rt.execute("ORDER = '' shutdown()")
+                ok(rt.eval("ORDER") == "chef,game,", "chef: shutdown: Chef, then the game's: %r" % rt.eval("ORDER"), failures)
+                rt.execute("init()")
+                ok(rt.eval("CHEF_INITS") == 1, "chef: init again (the engine's) does not call Chef's init", failures)
+                ok(rt.eval("CHEF_FROM") == "Boot Mod Loader 0.13.2" and rt.eval("CHEF_PHASE") == "init" and rt.eval("CHEF_VIA") == "mods/chef_shared_loader/core_1",
+                   "chef: the hand-off note: %r %r" % (rt.eval("CHEF_FROM"), rt.eval("CHEF_PHASE")), failures)
+                ok(rt.eval("CHEF_STARTS") == "mods/test/narrow,mods/test/declared",
+                   "chef: it would start exactly those: %r" % rt.eval("CHEF_STARTS"), failures)
+                ok(rt.eval("CHEF_BROKEN_MARK") == "false", "chef: a mod that failed here is not started there again", failures)
+                ok("handed off to Chef Shared Loader (patch_6) for 2 mod(s) made for it: mods/test/narrow, mods/test/declared; it runs as one link (update, render, shutdown)" in log
+                   and rt.eval("package.loaded['mods/chef_shared_loader/core_1']") is True,
+                   "chef: the log says the hand-off", failures)
+            else:
+                ok(rt.eval("CHEF_FROM") is None and "made for Chef Shared Loader, which is not deployed: not started (mods/test/narrow, mods/test/declared)" in log,
+                   "chef: without its core, named and left", failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def check(source):
     """Run the loader source on Lua 5.1 in a fake game; return the failures."""
     failures = []
@@ -796,6 +954,8 @@ def check(source):
         check_second_launch(source, failures)
         check_no_menu_limits(source, failures)
         check_translation_pack(source, failures)
+        check_guest_boot(source, failures)
+        check_chef_handoff(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

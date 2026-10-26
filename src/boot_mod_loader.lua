@@ -32,8 +32,52 @@
 -- Mods written for Mod Options Menu find a ModOptionsMenu look-alike whose
 -- settings are edited in HD2 Mod Setting GUI, outside the game (see "Mod
 -- Options Menu look-alike" below).
+--
+-- Guest boots (0.12.0): a mod that is no loader but brings its own `boot`,
+-- which starts only that mod (Objective Tracker 0.6.7), would take the one
+-- slot the game starts from. HD2 Mod Quick Deploy deploys such a boot off the
+-- slot, as a plain script whose first line is "-- HD2-Guest-Boot: <mod>".
+-- After the mods have loaded, each guest is run once with the game's
+-- callbacks (init, update, render, shutdown) saved; the ones it defined are
+-- kept for it and the saved ones put back, then its init is called, and its
+-- update, render and shutdown run, then the chain, each time the engine calls
+-- it. Each guest is a link of its own, compiled as "guest_boot/<mod>", the
+-- name of its archive row: Mod Lag Watchdog names and finds it by that (as
+-- "boot (boot patch)" it was the loader's). An error is logged (the first
+-- five), and a guest that failed 50 times is stopped for the launch. The
+-- highest patch wins for a name, as for mods.
+-- Evidence: Objective Tracker 0.6.7 runs this loader's boot the same way
+-- (proven in game 2026-10-26, 8 of 8 mods started); this loader running it
+-- is assumed until tried in game.
+--
+-- Mods made for Chef Shared Loader (0.13.0): one that says so (HD2-Requires:
+-- chef-shared-loader in its first 1200 bytes), or that takes Chef's `chef`
+-- table as its argument (local chef = ...) and uses it without testing for it
+-- (NarrowHUD 1.0.5 failed here: "attempt to index local 'chef' (a nil
+-- value)"), is not run. After the mods, when Chef Shared Loader's core is
+-- deployed (HD2 Mod Quick Deploy puts it in without its boot), this loader
+-- hands off to it the way its docs/MODDING.md "For other loaders" says:
+-- ChefSharedLoaderHandoff = { from, phase = 'init' }, then its core,
+-- mods/chef_shared_loader/core_1, run as require would (the name as its
+-- argument). The core is read from the deployed archives like the mods
+-- (0.13.1), require is the fallback when no archive holds it. (0.13.1 was
+-- made on a wrong reading: in the 11:11 session the core was not deployed at
+-- all -- an older manager window had deployed without it -- so can_get's no
+-- was true. Reading it like the mods is kept: it needs nothing from the
+-- engine.) Chef then starts only what this loader did
+-- not: it skips a mod __boot_mod_loader.mods lists as 'loaded', or one
+-- package.loaded holds (the mods that failed here get false there, so they
+-- do not fail twice). Its own ModOptionsMenu / ModBindingsMenu are set only
+-- where none is (read in 1.2.1's source), so the mods here keep the settings
+-- window; the mods it starts use its F9 menu. Proven in game 2026-10-26.
+-- Since 0.13.2 the game's callbacks are off while it loads, so it takes over
+-- no chain (it would hold the chain in its own tables, where Mod Lag Watchdog
+-- cannot follow it, and show everything below as "core_1"); this loader puts
+-- the chain back and runs Chef's init-less callbacks as one link on top of it,
+-- compiled as "mods/chef_shared_loader/chef_shared_loader": Chef first, then
+-- the chain, the order Chef keeps itself.
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.11.0"
+local MARKER = "boot-mod-loader-0.13.2"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -113,6 +157,7 @@ local function data_dir()
 end
 
 -- The declared Lua resources of one archive: { name, at, size } each.
+local CHEF_CORE_ID = "c27789387e64579a"   -- murmur64("mods/chef_shared_loader/core_1"), as hex
 local function declared_in(file)
   local head = file:read(0x48)
   if head == nil or #head < 0x48 or u32(head, 0) ~= 0xF0000011 then return nil, "not an archive" end
@@ -131,8 +176,13 @@ local function declared_in(file)
         local first = file:read(math.min(size, 8 + 300))
         if first ~= nil and #first > 8 and u32(first, 4) == 2 then          -- 2: source, not bytecode
           local name = string.match(string.sub(first, 9), "^%-%- HD2%-Addon: (mods/[A-Za-z0-9_]+/[A-Za-z0-9_/]+)\r?\n")
-          if name ~= nil and string.sub(name, -1) ~= "/" then
+          if hex64(rows, row) == CHEF_CORE_ID then
+            found[#found + 1] = { name = "chef core", at = at + 8, size = u32(first, 0), chef_core = true }
+          elseif name ~= nil and string.sub(name, -1) ~= "/" then
             found[#found + 1] = { name = name, at = at + 8, size = u32(first, 0) }
+          else
+            local guest = string.match(string.sub(first, 9), "^%-%- HD2%-Guest%-Boot: ([^\r\n]+)\r?\n")
+            if guest ~= nil then found[#found + 1] = { name = guest, at = at + 8, size = u32(first, 0), guest = true } end
           end
         end
       end
@@ -158,7 +208,8 @@ local function discover()
       if ok2 and found ~= nil then
         for _, entry in ipairs(found) do
           entry.patch, entry.path = n, path
-          by_name[entry.name] = entry                                      -- a higher patch wins
+          if entry.chef_core then L.chef_core = entry                       -- a higher patch wins
+          else by_name[(entry.guest and "guest:" or "") .. entry.name] = entry end
         end
       else
         say("patch_" .. n .. ": " .. tostring(ok2 and why or found))
@@ -166,14 +217,19 @@ local function discover()
       pcall(function() file:close() end)
     end
   end
-  local list = {}
-  for _, entry in pairs(by_name) do list[#list + 1] = entry end
-  table.sort(list, function(a, b)
+  local list, guests = {}, {}
+  for _, entry in pairs(by_name) do
+    if entry.guest then guests[#guests + 1] = entry else list[#list + 1] = entry end
+  end
+  local function order(a, b)
     if a.patch ~= b.patch then return a.patch < b.patch end
     return a.name < b.name
-  end)
-  say(string.format("%s: %d patch archives read, %d declared mods", dir, opened, #list))
-  return list
+  end
+  table.sort(list, order)
+  table.sort(guests, order)
+  say(string.format("%s: %d patch archives read, %d declared mods", dir, opened, #list)
+      .. (#guests > 0 and string.format(", %d guest boot(s)", #guests) or ""))
+  return list, guests
 end
 
 -- ------------------------------------------------------------ Bingus API, the ffi-free part
@@ -1841,6 +1897,22 @@ end
 
 -- ------------------------------------------------------------ running them
 
+-- A mod made for Chef Shared Loader only (see the top): not run here.
+L.for_chef = {}
+local function for_chef(source)
+  local head = string.sub(source, 1, 1200)
+  if string.find(head, "\n%-%- HD2%-Requires: chef%-shared%-loader") or string.find(head, "\n%-%- HD2%-Requires: chef%-loader") then
+    return true
+  end
+  if not (string.find(source, "^local%s+chef%s*=%s*%.%.%.") or string.find(source, "\nlocal%s+chef%s*=%s*%.%.%.")) then return false end
+  -- chef itself tested anywhere: the mod copes without it
+  for _, test in ipairs({ "if%s+chef%s", "if%s+not%s+chef[%s%)]", "not%s+chef%s+then", "type%(%s*chef%s*%)",
+                          "[%s%(=,]chef%s+and%s", "[%s%(=,]chef%s+or%s", "chef%s*[=~]=" }) do
+    if string.find(source, test) then return false end
+  end
+  return string.find(source, "chef[%.:]") ~= nil
+end
+
 local function run(entry)
   local ok, file = pcall(io.open, entry.path, "rb")
   if not ok or file == nil then
@@ -1854,6 +1926,11 @@ local function run(entry)
   if source == nil or #source ~= entry.size then
     entry.state = "unreadable"
     say(entry.name .. ": short read")
+    return
+  end
+  if for_chef(source) then
+    entry.state = "for chef"
+    L.for_chef[#L.for_chef + 1] = entry
     return
   end
   local chunk, err = loadstring(source, "@" .. entry.name)
@@ -1880,11 +1957,187 @@ local function run(entry)
   end
 end
 
+-- ------------------------------------------------------------ guest boots
+
+local CALLBACKS = { "init", "update", "render", "shutdown" }
+local GUEST_MAX_ERRORS = 50
+L.guests = {}
+
+-- a failure: logged the first five times, the guest stopped after 50
+local function guest_failed(g, name, why)
+  g.errors = g.errors + 1
+  if g.errors <= 5 then say(string.format("guest boot %s: %s failed: %s", g.name, name, tostring(why))) end
+  if g.errors >= GUEST_MAX_ERRORS then
+    g.on = false
+    say(string.format("guest boot %s: stopped for this launch after %d errors", g.name, g.errors))
+  end
+  flush()
+end
+
+local function call_guest(g, name, ...)
+  local fn = g.on and g.fns[name]
+  if fn == nil then return end
+  local ok, why = pcall(fn, ...)
+  if not ok then guest_failed(g, name, why) end
+end
+
+-- One guest's link in a callback's chain, compiled under the guest's own name.
+-- Its one function upvalue is the chain below (Mod Lag Watchdog follows
+-- upvalues); the guest and its failure handler are reached through g.
+local GUEST_LINK = "local previous, g, k = ...\n"
+  .. "return function(...)\n"
+  .. "  local fn = g.on and g.fns[k]\n"
+  .. "  if fn ~= nil then\n"
+  .. "    local ok, why = pcall(fn, ...)\n"
+  .. "    if not ok then g.failed(k, why) end\n"
+  .. "  end\n"
+  .. "  if previous ~= nil then return previous(...) end\n"
+  .. "end\n"
+
+local function run_guest(entry)
+  local ok, file = pcall(io.open, entry.path, "rb")
+  if not ok or file == nil then
+    say("guest boot " .. entry.name .. ": cannot open " .. entry.path)
+    return
+  end
+  file:seek("set", entry.at)
+  local source = file:read(entry.size)
+  pcall(function() file:close() end)
+  if source == nil or #source ~= entry.size then
+    say("guest boot " .. entry.name .. ": short read")
+    return
+  end
+  local chunk, err = loadstring(source, "@" .. entry.name)
+  if chunk == nil then
+    say("guest boot " .. entry.name .. " (patch_" .. entry.patch .. "): does not compile on Lua 5.1: " .. tostring(err))
+    return
+  end
+  local before = {}
+  for _, k in ipairs(CALLBACKS) do before[k] = rawget(_G, k) end
+  local clock0 = os.clock()
+  local ran, why = xpcall(chunk, function(e)
+    return tostring(e) .. "\n" .. (type(debug) == "table" and debug.traceback("", 2) or "")
+  end)
+  local took = (os.clock() - clock0) * 1000
+  -- the callbacks it defined are its own; the chain is put back as it was
+  local g, names = { name = entry.name, fns = {}, errors = 0, on = true }, {}
+  g.failed = function(name, why) guest_failed(g, name, why) end
+  for _, k in ipairs(CALLBACKS) do
+    local now = rawget(_G, k)
+    if type(now) == "function" and now ~= before[k] then
+      g.fns[k] = now
+      names[#names + 1] = k
+    end
+    rawset(_G, k, before[k])
+  end
+  if not ran then
+    say("guest boot " .. entry.name .. " (patch_" .. entry.patch .. "): FAILED: " .. tostring(why))
+    return
+  end
+  L.guests[#L.guests + 1] = g
+  say(string.format("guest boot %s (patch_%d, %d bytes): loaded in %.0f ms; runs %s", entry.name, entry.patch, entry.size, took,
+                    #names > 0 and table.concat(names, ", ") or "no callback"))
+  call_guest(g, "init")                                                    -- the engine's init is under way
+end
+
+-- update, render and shutdown: each guest that has one gets its own link on
+-- top of the chain (it runs, then the chain); wrapped once, after the mods and
+-- the guests have loaded
+function L.hook_guests()
+  if L.guests_hooked or #L.guests == 0 then return end
+  L.guests_hooked = true
+  for _, k in ipairs({ "update", "render", "shutdown" }) do
+    for _, g in ipairs(L.guests) do
+      if g.fns[k] ~= nil then
+        local previous = rawget(_G, k)
+        if type(previous) ~= "function" then previous = nil end
+        local make, why = loadstring(GUEST_LINK, "@guest_boot/" .. g.name)
+        if make == nil then say("guest boot " .. g.name .. ": " .. tostring(why))
+        else rawset(_G, k, make(previous, g, k)) end
+      end
+    end
+  end
+end
+
+-- The mods made for Chef Shared Loader: handed to it when its core is here.
+local CHEF_CORE = "mods/chef_shared_loader/core_1"
+function L.hand_off()
+  if #L.for_chef == 0 then return end
+  local names = {}
+  for _, e in ipairs(L.for_chef) do names[#names + 1] = e.name end
+  -- its core from the archives (read like the mods), else through require
+  local core, where = nil, nil
+  if L.chef_core ~= nil then
+    local okf, file = pcall(io.open, L.chef_core.path, "rb")
+    if okf and file ~= nil then
+      file:seek("set", L.chef_core.at)
+      local text = file:read(L.chef_core.size)
+      pcall(function() file:close() end)
+      if text ~= nil and #text == L.chef_core.size then
+        local chunk, err = loadstring(text, "@" .. CHEF_CORE)
+        if chunk == nil then say("Chef Shared Loader's core does not compile: " .. tostring(err)) return end
+        core, where = chunk, "patch_" .. L.chef_core.patch
+      end
+    end
+  end
+  if core == nil then
+    local engine = rawget(_G, "stingray")
+    local A = type(engine) == "table" and engine.Application
+    local ok, there = pcall(function() return A.can_get("lua", CHEF_CORE) end)
+    if ok and there then core, where = function(name) return require(name) end, "require" end
+  end
+  if core == nil then
+    say(string.format("%d mod(s) made for Chef Shared Loader, which is not deployed: not started (%s)", #names, table.concat(names, ", ")))
+    return
+  end
+  if rawget(_G, "ChefSharedLoader") ~= nil then
+    say("Chef Shared Loader is running already: it starts " .. table.concat(names, ", "))
+    return
+  end
+  -- what failed here is not started again there (it skips a name package.loaded holds)
+  local P = rawget(_G, "package")
+  if type(P) == "table" and type(P.loaded) == "table" then
+    for _, e in ipairs(L.mods) do
+      if e.state ~= "loaded" and e.state ~= "for chef" and P.loaded[e.name] == nil then P.loaded[e.name] = false end
+    end
+  end
+  local from = "Boot Mod Loader " .. string.gsub(MARKER, "^boot%-mod%-loader%-", "")
+  -- the callbacks off while it loads: it takes over no chain (see the top)
+  local saved = {}
+  for _, k in ipairs(CALLBACKS) do saved[k] = rawget(_G, k); rawset(_G, k, nil) end
+  rawset(_G, "ChefSharedLoaderHandoff", { from = from, phase = "init" })
+  local started, why = pcall(core, CHEF_CORE)
+  local g, kept = { name = "Chef Shared Loader", fns = {}, errors = 0, on = true }, {}
+  g.failed = function(name, problem) guest_failed(g, name, problem) end
+  for _, k in ipairs(CALLBACKS) do
+    local now = rawget(_G, k)
+    if started and type(now) == "function" and now ~= saved[k] and k ~= "init" then g.fns[k] = now; kept[#kept + 1] = k end
+    rawset(_G, k, saved[k])
+  end
+  if started then
+    if type(P) == "table" and type(P.loaded) == "table" and P.loaded[CHEF_CORE] == nil then P.loaded[CHEF_CORE] = (why == nil) and true or why end
+    -- its link on top of each chain it has a callback for
+    for _, k in ipairs({ "update", "render", "shutdown" }) do
+      if g.fns[k] ~= nil then
+        local previous = rawget(_G, k)
+        if type(previous) ~= "function" then previous = nil end
+        local make, problem = loadstring(GUEST_LINK, "@mods/chef_shared_loader/chef_shared_loader")
+        if make == nil then say("Chef Shared Loader's link: " .. tostring(problem)) else rawset(_G, k, make(previous, g, k)) end
+      end
+    end
+    say(string.format("handed off to Chef Shared Loader (%s) for %d mod(s) made for it: %s; it runs as one link (%s)",
+                      where, #names, table.concat(names, ", "), table.concat(kept, ", ")))
+  else
+    rawset(_G, "ChefSharedLoaderHandoff", nil)
+    say("Chef Shared Loader did not start: " .. tostring(why))
+  end
+end
+
 local function start()
   if L.started then return end
   L.started = true
   local clock0 = os.clock()
-  local ok, list = pcall(discover)
+  local ok, list, guests = pcall(discover)
   if not ok then
     say("discovery failed: " .. tostring(list))
     flush()
@@ -1897,6 +2150,11 @@ local function start()
     run(entry)
     flush()
   end
+  for _, entry in ipairs(guests or {}) do
+    local ran, why = pcall(run_guest, entry)
+    if not ran then say("guest boot " .. tostring(entry.name) .. ": " .. tostring(why)) end
+    flush()
+  end
   for _, fn in ipairs(after_startup) do
     local ran, why = pcall(fn)
     if not ran then say("after_startup: " .. tostring(why)) end
@@ -1907,10 +2165,15 @@ local function start()
   if not swept then say("settings window lists: " .. tostring(why)) end
   local loaded = 0
   for _, entry in ipairs(list) do if entry.state == "loaded" then loaded = loaded + 1 end end
-  say(string.format("started %d of %d mods in %.0f ms", loaded, #list, (os.clock() - clock0) * 1000))
+  say(string.format("started %d of %d mods in %.0f ms", loaded, #list - #L.for_chef, (os.clock() - clock0) * 1000))
   L.started_done = true
+  L.hook_guests()                                 -- before shutdown's hook: on_shutdown still comes last
   L.hook_shutdown()
   L.hook_update()
+  flush()
+  -- last: Chef keeps the chain it finds and runs it after its own each frame
+  local handed, why3 = pcall(L.hand_off)
+  if not handed then say("hand-off to Chef Shared Loader: " .. tostring(why3)) end
   flush()
 end
 

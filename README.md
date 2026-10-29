@@ -61,7 +61,9 @@ For the settings of mods made for Mod Options Menu and Mod Bindings Menu, use
 A mod made only for [Chef Shared Loader](https://github.com/Th3chef/Chef-Shared-Loader)
 is not run by Boot Mod Loader. It counts as one when, in its first 1200 bytes,
 it declares `-- HD2-Requires: chef-shared-loader`, or takes `local chef = ...`
-and uses `chef` without checking that it is there.
+and uses `chef` without checking that it is there. Checks in comments and
+strings, and checks of a `chef` that an inner function declares itself, do not
+count.
 
 When Chef Shared Loader's core is deployed (its archive is in the game folder),
 Boot Mod Loader hands those mods to it, after every other mod has started, as

@@ -786,6 +786,13 @@ CHEF_MODS = {
     3: ("mods/test/copes", "-- HD2-Addon: mods/test/copes\nlocal chef = ...\nif type(chef) ~= 'table' then COPES_QUIET = true return end\nCOPES_CHEF = true\n", 2),
     4: ("mods/test/declared", "-- HD2-Addon: mods/test/declared\n-- HD2-Requires: chef-shared-loader\nDECLARED_RAN = true\n", 2),
     5: ("mods/test/broken", MODS[2][1], 2),
+    # 0.13.3: HUDdle 0.4.9's shape: the script takes chef and uses it untested; its modules test chefs of their
+    # own (a local, a parameter), which say nothing of the script's. 0.13.2 ran it here: "attempt to index local 'chef'"
+    7: ("mods/test/modular", "-- HD2-Addon: mods/test/modular\nlocal chef = ...\n"
+        "local M = (function()\n  local chef, O = nil, {}\n  local function set(c) chef = c end\n  if chef then O.x = 1 end\n  return O\nend)()\n"
+        "local N = (function(chef, x) if type(chef) == 'table' then return 1 end end)(nil)\n"
+        "local s = 'if chef then' -- if chef then\n"
+        "if type(chef.own_log) == 'function' then pcall(chef.own_log, 'modular') end\nMODULAR_RAN = true\n", 2),
 }
 # Chef Shared Loader's core, as far as the hand-off goes: what it was told, its argument, and what it would start.
 # Deployed as an archive (0.13.1: read from there; in game can_get said no at init), and the same as a require
@@ -839,7 +846,7 @@ def check_chef_handoff(source, failures):
             log = open(os.path.join(root, "appdata", "Arrowhead", "Helldivers2", "boot_mod_loader.log"), encoding="utf-8").read()
             log = log[log.rindex("== boot-mod-loader-"):]
             tag = "chef here" if here else "no chef"
-            ok(rt.eval("NARROW_RAN") is None and rt.eval("DECLARED_RAN") is None,
+            ok(rt.eval("NARROW_RAN") is None and rt.eval("DECLARED_RAN") is None and rt.eval("MODULAR_RAN") is None,
                "chef (%s): the mods made for it are not run here" % tag, failures)
             ok(rt.eval("ALPHA_RAN") == 1 and rt.eval("COPES_QUIET") is True,
                "chef (%s): the others run, one that tests for chef too" % tag, failures)
@@ -862,16 +869,16 @@ def check_chef_handoff(source, failures):
                 ok(rt.eval("ORDER") == "chef,game,", "chef: shutdown: Chef, then the game's: %r" % rt.eval("ORDER"), failures)
                 rt.execute("init()")
                 ok(rt.eval("CHEF_INITS") == 1, "chef: init again (the engine's) does not call Chef's init", failures)
-                ok(rt.eval("CHEF_FROM") == "Boot Mod Loader 0.13.2" and rt.eval("CHEF_PHASE") == "init" and rt.eval("CHEF_VIA") == "mods/chef_shared_loader/core_1",
+                ok(rt.eval("CHEF_FROM") == "Boot Mod Loader " + __import__("build").VERSION and rt.eval("CHEF_PHASE") == "init" and rt.eval("CHEF_VIA") == "mods/chef_shared_loader/core_1",
                    "chef: the hand-off note: %r %r" % (rt.eval("CHEF_FROM"), rt.eval("CHEF_PHASE")), failures)
-                ok(rt.eval("CHEF_STARTS") == "mods/test/narrow,mods/test/declared",
+                ok(rt.eval("CHEF_STARTS") == "mods/test/narrow,mods/test/declared,mods/test/modular",
                    "chef: it would start exactly those: %r" % rt.eval("CHEF_STARTS"), failures)
                 ok(rt.eval("CHEF_BROKEN_MARK") == "false", "chef: a mod that failed here is not started there again", failures)
-                ok("handed off to Chef Shared Loader (patch_6) for 2 mod(s) made for it: mods/test/narrow, mods/test/declared; it runs as one link (update, render, shutdown)" in log
+                ok("handed off to Chef Shared Loader (patch_6) for 3 mod(s) made for it: mods/test/narrow, mods/test/declared, mods/test/modular; it runs as one link (update, render, shutdown)" in log
                    and rt.eval("package.loaded['mods/chef_shared_loader/core_1']") is True,
                    "chef: the log says the hand-off", failures)
             else:
-                ok(rt.eval("CHEF_FROM") is None and "made for Chef Shared Loader, which is not deployed: not started (mods/test/narrow, mods/test/declared)" in log,
+                ok(rt.eval("CHEF_FROM") is None and "made for Chef Shared Loader, which is not deployed: not started (mods/test/narrow, mods/test/declared, mods/test/modular)" in log,
                    "chef: without its core, named and left", failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
@@ -918,6 +925,19 @@ def check(source):
                                                                                if "declared" in l], failures)
         ok("started 5 of 7 mods" in log, "5 of 7 start (alpha once, bingus, late, files, wrapper)", failures)
         ok(("game version: %s (Steam build 26088801" % CHECKED) in log, "a checked build is named", failures)
+        # (0.13.4) build 26251122 of 2026-10-29: its boot is the embedded one, so it is a checked build too
+        later = tempfile.mkdtemp(prefix="bootloader_")
+        try:
+            fake_game(later, {1: MODS[1]})
+            rt3 = runtime(later, "stingray:46805 437a3d445f9df7662b60086ac8ae3c65b5c95da6")
+            rt3.eval("loadstring")(source, "=boot")()
+            rt3.execute("init()")
+            log3 = open(os.path.join(later, "appdata", "Arrowhead", "Helldivers2", "boot_mod_loader.log"), encoding="utf-8").read()
+            ok("(Steam build 26251122, 2026-10-29)" in log3 and "NOT THIS GAME VERSION" not in log3
+               and rt3.eval("CowboyBingusModLoader.game.checked") is True,
+               "build 26251122 (2026-10-29) is a checked build", failures)
+        finally:
+            shutil.rmtree(later, ignore_errors=True)
         ok(rt.eval("CowboyBingusModLoader.game.checked") is True and rt.eval("HAS_ON_SHUTDOWN") is True,
            "game.checked and capabilities.on_shutdown", failures)
         rt.execute("shutdown()")

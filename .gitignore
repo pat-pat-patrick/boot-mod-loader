@@ -2,3 +2,10 @@
 boot.luac
 dist/
 __pycache__/
+
+# Local analysis material (third-party packages and extracts). Not part of this
+# repository and never committed; provenance is discussed on the pull request.
+ref/
+
+# Local agent workspace data.
+.workbuddy/

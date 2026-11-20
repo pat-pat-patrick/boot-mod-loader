@@ -19,7 +19,7 @@ SOURCE = os.path.join(HERE, "src", "boot_mod_loader.lua")
 BOOT = os.path.join(HERE, "boot.luac")
 ICON = os.path.join(HERE, "icon.png")       # the mod manager's icon, 1024 px
 DIST = os.path.join(HERE, "dist")
-VERSION = "0.13.4"
+VERSION = "0.14.1"
 NAME = "Boot Mod Loader"
 FOLDER = "Boot Mod Loader"
 RESOURCE = "boot"
@@ -39,6 +39,7 @@ MANIFEST = {
     "Guid": "3f7a2c91-6d4e-4b58-9a0c-e15b82d4f6a7",
     "IconPath": "Boot Mod Loader.png",
     "Name": NAME,
+    "Targets": ["Official"],              # the official game only (HD2 Mod Quick Deploy reads it)
     "Description": "Starts Lua mods (-- HD2-Addon:) on the game since its 2026-10-20 update; runs the game's own boot script unchanged.",
     "Options": [{
         "Name": "Loader",
@@ -51,7 +52,7 @@ README = """Boot Mod Loader v{version}
 ========================
 
 Starts Lua mods on Helldivers 2 since its 2026-10-20 update (Steam build
-25988413; checked again on 26088801, 2026-10-22). Takes the game's `boot` script, runs the original first, then
+25988413; checked again on 26088801, 26251122 and 26568081). Takes the game's `boot` script, runs the original first, then
 starts every Lua mod whose first line is "-- HD2-Addon: mods/<author>/<name>",
 found in the deployed data\\9ba626afa44a3aa3.patch_<n> archives. Each mod runs
 under pcall; failures are logged with a traceback to
@@ -64,6 +65,9 @@ mods still start.
 Mods made for Mod Options Menu or Mod Bindings Menu: their settings and keys
 show in HD2 Mod Setting GUI (github.com/pat-pat-patrick/hd2-mod-setting-gui),
 outside the game.
+Mods written for MDL (a script that returns its definition, with on_enable
+and on_update) run too: enabled on the first frame, updated each frame,
+disabled when the game quits.
 Source: https://github.com/pat-pat-patrick/boot-mod-loader (MIT)
 """.format(version=VERSION)
 

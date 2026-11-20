@@ -884,6 +884,134 @@ def check_chef_handoff(source, failures):
         shutil.rmtree(root, ignore_errors=True)
 
 
+MDL_HUD = r"""-- HD2-Addon: mods/test/mdlhud
+-- IntegratedHUD-MDL 0.9.4's shape: the script hooks nothing and returns its definition
+local definition
+definition = {
+  name = 'Test HUD', version = '1.0',
+  on_enable = function(ctx)
+    MDL_ENABLES = (MDL_ENABLES or 0) + 1
+    MDL_CTX_ID, MDL_SAW_GUEST = ctx.id, rawget(_G, 'MDL3') ~= nil
+    MDL_SEEN_BEFORE = ctx.settings.count
+    ctx.settings.count = (ctx.settings.count or 0) + 1
+    ctx.settings.text = 'a\tb\\c'
+    ctx.settings.flag = true
+    ctx.on_cleanup(function() ORDER = ORDER .. 'cleanup,' end)
+    ctx.global('MDLTEST_G', 5)
+    ctx.log('hello', 1)
+    local M = rawget(_G, 'ModOptionsMenu')
+    MDL_REG = M.register_option('mdlhud.size', { type = 'slider', label = function() return 'Size' end, min = 50, max = 150,
+                                                 step = 5, default = 100, mod = function() return 'Test HUD' end,
+                                                 mod_id = 'mods/test/mdlhud' })
+  end,
+  on_update = function(ctx, dt)
+    MDL_UPDATES = (MDL_UPDATES or 0) + 1
+    MDL_DT = dt
+    if MDL_FAIL then error('hud boom') end
+  end,
+  on_disable = function(ctx) MDL_DISABLES = (MDL_DISABLES or 0) + 1 ORDER = ORDER .. 'disable,' end,
+  on_shutdown = function(ctx) ORDER = ORDER .. 'mdl_shutdown,' end,
+}
+return definition
+"""
+MDL_BAD = ("-- HD2-Addon: mods/test/mdlbad\n"
+           "return { name = 'Bad', on_enable = function(ctx) error('enable boom') end,\n"
+           "         on_update = function(ctx, dt) BAD_UPDATES = (BAD_UPDATES or 0) + 1 end,\n"
+           "         on_disable = function(ctx) BAD_DISABLED = true end }\n")
+# a Bingus mod that returns a table of its own: no definition, left as it was
+NOT_MDL = "-- HD2-Addon: mods/test/module\nreturn { update = function() end, version = 2 }\n"
+MDL3_GUEST = "-- HD2-Guest-Boot: MDL3\nrawset(_G, 'MDL3', { gui = {} })\n"
+
+
+def check_mdl_mods(source, failures):
+    """0.14.0: a mod written for MDL (its script returns { on_enable, on_update, ... }) is run the way
+    MDL's manager runs it: enabled on the first frame after the guests, updated each frame with dt,
+    its ModOptionsMenu options in the settings window (and not set aside as no mod's), on_shutdown,
+    on_disable and cleanups ahead of the game's shutdown, ctx.settings kept across launches; a failing
+    on_enable leaves it off; 50 errors disable it. 0.13.5 loaded such a mod and never called it."""
+    import json
+    root = tempfile.mkdtemp(prefix="bootloader_mdl_")
+    try:
+        fake_game(root, {1: MODS[1], 2: ("mods/test/mdlhud", MDL_HUD, 2), 3: ("guest_boot/MDL3", MDL3_GUEST, 2),
+                         4: ("mods/test/module", NOT_MDL, 2), 5: ("mods/test/mdlbad", MDL_BAD, 2)})
+        app = os.path.join(root, "appdata", "Arrowhead", "Helldivers2")
+        logf = os.path.join(app, "boot_mod_loader.log")
+
+        def put(name, text="{}"):
+            open(os.path.join(app, name), "w", encoding="utf-8", newline="\n").write(text)
+        put("mom_mods_test_mdlhud_options.json", '{"title": "Test HUD"}')   # the mod's list from an earlier game
+        put("mom_gone_options.json")                                         # a mod no longer installed
+        put("boot_mod_loader_lists.txt", "mom_mods_test_mdlhud\nmom_gone\n")
+        rt = runtime(root, CHECKED)
+        rt.execute("GAME_UPS = 0 update = function() GAME_UPS = GAME_UPS + 1 end GAME_UPDATE = update")
+        rt.eval("loadstring")(source, "=boot")()
+        rt.execute("init()")
+        log = open(logf, encoding="utf-8").read()
+        ok(rt.eval("MDL_ENABLES") is None and rt.eval("ALPHA_RAN") == 1, "mdl: nothing enabled at init", failures)
+        ok("mods/test/mdlhud (patch_2, " in log and "; written for MDL: Test HUD 1.0, enabled on the first frame" in log,
+           "mdl: its log line names it: %r" % [l for l in log.splitlines() if "mdlhud" in l], failures)
+        ok("2 mod(s) written for MDL: enabled on the first frame" in log, "mdl: counted", failures)
+        ok("mods/test/module (patch_4, " in log and "written for MDL" not in [l for l in log.splitlines() if "module" in l][0],
+           "mdl: a mod returning a table without on_enable/on_update is not one", failures)
+        ok(rt.eval("type(package.loaded['mods/test/mdlhud'])") == "table", "mdl: package.loaded holds its definition", failures)
+        ok(rt.eval("debug.getinfo(update, 'S').source") == "@mods/test/mdlhud",
+           "mdl: the first mod's link is on top of update, named after it: %r" % rt.eval("debug.getinfo(update, 'S').source"), failures)
+        held = rt.eval("(function() local n, i = {}, 1 while true do local name, v = debug.getupvalue(update, i) "
+                       "if name == nil then break end if type(v) == 'function' then n[#n + 1] = name end i = i + 1 end "
+                       "return table.concat(n, ',') end)()")
+        ok(held == "previous", "mdl: its link holds one function, the chain: %r" % held, failures)
+        ok(os.path.exists(os.path.join(app, "mom_mods_test_mdlhud_options.json")) and os.path.exists(os.path.join(app, "mom_gone_options.json")),
+           "mdl: no list set aside before the MDL mods enable", failures)
+        rt.execute("update(0.016)")
+        ok(rt.eval("MDL_ENABLES") == 1 and rt.eval("MDL_CTX_ID") == "mods/test/mdlhud" and rt.eval("MDL_SAW_GUEST") is True,
+           "mdl: enabled on the first frame, ctx.id set, the guest's MDL3 there: %r %r %r"
+           % (rt.eval("MDL_ENABLES"), rt.eval("MDL_CTX_ID"), rt.eval("MDL_SAW_GUEST")), failures)
+        ok(rt.eval("MDL_UPDATES") == 1 and rt.eval("MDL_DT") == 0.016 and rt.eval("GAME_UPS") == 1,
+           "mdl: on_update(ctx, dt) the same frame, the game's update still runs", failures)
+        ok(rt.eval("MDL_REG") is True and rt.eval("ModOptionsMenu.get('mdlhud.size')") == 100,
+           "mdl: an option registered in on_enable is served", failures)
+        ok(rt.eval("MDLTEST_G") == 5, "mdl: ctx.global sets the global", failures)
+        log = open(logf, encoding="utf-8").read()
+        ok("MDL mod mods/test/mdlhud: enabled" in log and "[mods/test/mdlhud] hello 1" in log, "mdl: enabled and ctx.log logged", failures)
+        ok("MDL mod mods/test/mdlbad: on_enable failed, not enabled: " in log and "enable boom" in log
+           and rt.eval("BAD_DISABLED") is True and rt.eval("BAD_UPDATES") is None,
+           "mdl: a failing on_enable is logged, the mod stays off (on_disable ran, on_update never)", failures)
+        rt.execute("for i = 1, 3 do update(0.5) end")
+        here = set(os.listdir(app))
+        ok("mom_mods_test_mdlhud_options.json" in here and "mom_mods_test_mdlhud_options.json.stale" not in here,
+           "mdl: its list stays (the sweep waited for on_enable)", failures)
+        ok("mom_gone_options.json.stale" in here, "mdl: a list no mod registered is still set aside", failures)
+        lst = json.load(open(os.path.join(app, "mom_mods_test_mdlhud_options.json"), encoding="utf-8"))
+        ok(lst.get("title") == "Test HUD" and [o.get("key") for o in lst.get("options", [])] == ["mdlhud_size"],
+           "mdl: the window's list has its option: %r" % lst, failures)
+        ok(rt.eval("MDL_UPDATES") == 4, "mdl: on_update each frame", failures)
+        rt.execute("ORDER = '' shutdown()")
+        ok(rt.eval("ORDER") == "mdl_shutdown,disable,cleanup,game,",
+           "mdl: on_shutdown, on_disable, its cleanup, then the game's shutdown: %r" % rt.eval("ORDER"), failures)
+        ok(rt.eval("MDLTEST_G") is None, "mdl: its ctx.global is cleared when it stops", failures)
+        saved = open(os.path.join(app, "boot_mod_loader_mdl_settings.txt"), encoding="utf-8").read()
+        ok(saved == "mods/test/mdlhud\tcount\tn\t1\nmods/test/mdlhud\tflag\tb\ttrue\nmods/test/mdlhud\ttext\ts\ta\\tb\\\\c\n",
+           "mdl: ctx.settings written: %r" % saved, failures)
+
+        # a second launch: ctx.settings read back; 50 errors disable it
+        rt2 = runtime(root, CHECKED)
+        rt2.execute("GAME_UPS = 0 update = function() GAME_UPS = GAME_UPS + 1 end")
+        rt2.eval("loadstring")(source, "=boot")()
+        rt2.execute("init() update(0.016)")
+        ok(rt2.eval("MDL_SEEN_BEFORE") == 1, "mdl: ctx.settings come back the next launch: %r" % rt2.eval("MDL_SEEN_BEFORE"), failures)
+        rt2.execute("MDL_FAIL = true ORDER = '' for i = 1, 60 do update(0.016) end")
+        log = open(logf, encoding="utf-8").read()
+        tail = log[log.rfind("== boot-mod-loader-"):]
+        ok(tail.count("MDL mod mods/test/mdlhud: on_update failed") == 5
+           and "MDL mod mods/test/mdlhud: disabled for this launch after 50 errors" in tail,
+           "mdl: five errors logged, disabled after 50", failures)
+        ok(rt2.eval("MDL_UPDATES") == 51 and rt2.eval("GAME_UPS") == 61 and rt2.eval("ORDER") == "disable,cleanup,",
+           "mdl: a disabled mod is not called again (on_disable once, no on_shutdown); the game's update still is: %r %r %r"
+           % (rt2.eval("MDL_UPDATES"), rt2.eval("GAME_UPS"), rt2.eval("ORDER")), failures)
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
 def check(source):
     """Run the loader source on Lua 5.1 in a fake game; return the failures."""
     failures = []
@@ -938,6 +1066,19 @@ def check(source):
                "build 26251122 (2026-10-29) is a checked build", failures)
         finally:
             shutil.rmtree(later, ignore_errors=True)
+        # (0.14.1) build 26568081 of 2026-11-11: its boot, extracted 2026-11-20, is the embedded one
+        latest = tempfile.mkdtemp(prefix="bootloader_")
+        try:
+            fake_game(latest, {1: MODS[1]})
+            rt4 = runtime(latest, "stingray:47139 65ced4e456ae7032d4cd36088a367dbcf93994b1")
+            rt4.eval("loadstring")(source, "=boot")()
+            rt4.execute("init()")
+            log4 = open(os.path.join(latest, "appdata", "Arrowhead", "Helldivers2", "boot_mod_loader.log"), encoding="utf-8").read()
+            ok("(Steam build 26568081, 2026-11-11)" in log4 and "NOT THIS GAME VERSION" not in log4
+               and rt4.eval("CowboyBingusModLoader.game.checked") is True,
+               "build 26568081 (2026-11-11) is a checked build", failures)
+        finally:
+            shutil.rmtree(latest, ignore_errors=True)
         ok(rt.eval("CowboyBingusModLoader.game.checked") is True and rt.eval("HAS_ON_SHUTDOWN") is True,
            "game.checked and capabilities.on_shutdown", failures)
         rt.execute("shutdown()")
@@ -976,6 +1117,7 @@ def check(source):
         check_translation_pack(source, failures)
         check_guest_boot(source, failures)
         check_chef_handoff(source, failures)
+        check_mdl_mods(source, failures)
     finally:
         shutil.rmtree(root, ignore_errors=True)
         shutil.rmtree(other, ignore_errors=True)

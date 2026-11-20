@@ -76,8 +76,29 @@
 -- the chain back and runs Chef's init-less callbacks as one link on top of it,
 -- compiled as "mods/chef_shared_loader/chef_shared_loader": Chef first, then
 -- the chain, the order Chef keeps itself.
+--
+-- Mods written for MDL (0.14.0): the script hooks nothing itself and
+-- returns its definition, { name, version, on_enable(ctx), on_update(ctx, dt),
+-- on_disable(ctx), on_shutdown(ctx), ... }, for MDL's manager to call (read in
+-- MDL3 3.0.0-dev.57's decoded boot, 2026-11-20: likely). Under this loader
+-- MDL3 runs as a guest and starts no mod ("another loader owns the addon
+-- registry"), so such a mod loaded here and did nothing (IntegratedHUD-MDL
+-- 0.9.4: not one line in its own log, 2026-11-20: proven). This loader now
+-- calls the definition the way MDL does: on_enable(ctx) on the first frame,
+-- after the guests (MDL3.gui, HD2Data are there by then), on_update(ctx, dt)
+-- each frame, and on_shutdown(ctx), on_disable(ctx) and the mod's cleanups
+-- when the game quits, ahead of the rest of the shutdown chain, last mod
+-- first. ctx is MDL's without what needs ffi or memory: id, settings (kept in
+-- boot_mod_loader_mdl_settings.txt), log, set, on_cleanup, global, loader,
+-- mdl. A mod's options registered through ModOptionsMenu go to the settings
+-- window as any other's. Each mod is a link of its own in update and
+-- shutdown, compiled under its name for Mod Lag Watchdog. An error is logged
+-- (the first five), and a mod that failed 50 times is disabled for the
+-- launch. IntegratedHUD-MDL 0.9.4 run this way: proven in game 2026-11-20
+-- (it draws, 878 s without an error, STOP at quit, a setting changed in the
+-- window applies at once).
 -- Plain Lua 5.1 only (no goto, bit or ffi)
-local MARKER = "boot-mod-loader-0.13.4"
+local MARKER = "boot-mod-loader-0.14.1"
 local ORIGINAL = "@ORIGINAL@"            -- the game's boot bytecode, put in by the builder
 -- Builds whose boot script is byte for byte the one embedded here (extracted
 -- from each install and compared).
@@ -86,6 +107,8 @@ local CHECKED_BUILDS = {
   ["stingray:46659 e176252a3ac4eb5436b25e7cef665a8c71afa243"] = "Steam build 26088801, 2026-10-22",
   -- 0.13.4: its boot (501 bytes) extracted from the install 2026-10-30, byte for byte the embedded one
   ["stingray:46805 437a3d445f9df7662b60086ac8ae3c65b5c95da6"] = "Steam build 26251122, 2026-10-29",
+  -- 0.14.1: its boot (501 bytes) extracted from the install 2026-11-20, byte for byte the embedded one
+  ["stingray:47139 65ced4e456ae7032d4cd36088a367dbcf93994b1"] = "Steam build 26568081, 2026-11-11",
 }
 
 if rawget(_G, "__boot_mod_loader") ~= nil then return end
@@ -1897,6 +1920,237 @@ local function check_game_version()
     .. table.concat(names, " and ") .. " only. Mods still start; if the game misbehaves, update Boot Mod Loader.")
 end
 
+-- ------------------------------------------------------------ mods written for MDL
+
+-- (see the top) A definition is a table with on_enable or on_update; a mod's
+-- script that returns anything else is left as it was.
+local MDL = { mods = {}, store = {}, written = nil, file = nil, begun = false }
+L.mdl = MDL.mods
+do
+  local ok, dir = pcall(os.getenv, "APPDATA")
+  if ok and type(dir) == "string" then MDL.file = dir .. "\\Arrowhead\\Helldivers2\\boot_mod_loader_mdl_settings.txt" end
+end
+
+-- The settings MDL would keep for each mod (its ctx.settings), one line each:
+-- "<mod>\t<key>\t<b|n|s>\t<value>", \\ \n \r \t escaped in a string; only
+-- booleans, finite numbers and strings under string keys are kept.
+local MDL_ESC = { ["\\"] = "\\\\", ["\n"] = "\\n", ["\r"] = "\\r", ["\t"] = "\\t" }
+local MDL_UNESC = { ["\\"] = "\\", n = "\n", r = "\r", t = "\t" }
+
+function MDL.read()
+  MDL.read_done = true
+  if MDL.file == nil then return end
+  local ok, f = pcall(io.open, MDL.file, "rb")
+  if not ok or f == nil then return end
+  local okr, text = pcall(f.read, f, "*a")
+  pcall(f.close, f)
+  for line in string.gmatch((okr and type(text) == "string") and text or "", "[^\n]+") do
+    local id, key, kind, v = string.match(string.gsub(line, "\r$", ""), "^([^\t]+)\t([^\t]+)\t([bns])\t(.*)$")
+    if id ~= nil then
+      local value
+      if kind == "b" then value = (v == "true")
+      elseif kind == "n" then value = tonumber(v)
+      else value = (string.gsub(v, "\\(.)", MDL_UNESC)) end
+      if value ~= nil then
+        MDL.store[id] = MDL.store[id] or {}
+        MDL.store[id][key] = value
+      end
+    end
+  end
+  MDL.written = MDL.text()
+end
+
+function MDL.text()
+  local ids, out = {}, {}
+  for id in pairs(MDL.store) do ids[#ids + 1] = id end
+  table.sort(ids)
+  for _, id in ipairs(ids) do
+    local keys = {}
+    for k, v in pairs(MDL.store[id]) do
+      local t = type(v)
+      if type(k) == "string" and not string.find(k, "[%c]") and (t == "boolean" or t == "string"
+         or (t == "number" and v == v and v > -math.huge and v < math.huge)) then keys[#keys + 1] = k end
+    end
+    table.sort(keys)
+    for _, k in ipairs(keys) do
+      local v = MDL.store[id][k]
+      local t = type(v)
+      local enc
+      if t == "boolean" then enc = "b\t" .. tostring(v)
+      elseif t == "number" then enc = "n\t" .. string.format("%.17g", v)
+      else enc = "s\t" .. (string.gsub(v, "[\\\n\r\t]", MDL_ESC)) end
+      out[#out + 1] = id .. "\t" .. k .. "\t" .. enc .. "\n"
+    end
+  end
+  return table.concat(out)
+end
+
+-- Written whole when it changed (ctx.set, after the mods enable, at shutdown).
+function MDL.save()
+  if MDL.file == nil or not MDL.read_done then return end
+  local text = MDL.text()
+  if text == MDL.written then return end
+  local ok, f = pcall(io.open, MDL.file, "wb")
+  if not ok or f == nil then
+    if not MDL.said_save then MDL.said_save = true say("MDL mods' settings: cannot write " .. MDL.file) end
+    return
+  end
+  local wrote = pcall(f.write, f, text)
+  pcall(f.close, f)
+  if wrote then MDL.written = text end
+end
+
+-- A loaded script's result: an MDL definition becomes an MDL mod here; its
+-- name and version for the log, nil for anything else.
+function MDL.adopt(entry, result)
+  if type(result) ~= "table" or (type(result.on_enable) ~= "function" and type(result.on_update) ~= "function") then
+    return nil
+  end
+  local m = { entry = entry, def = result, on = false, tried = false, errors = 0, lines = 0, cleanups = {}, globals = {} }
+  m.update = function(dt) MDL.step(m, dt) end
+  m.shutdown = function() MDL.stop(m, true) end
+  MDL.mods[#MDL.mods + 1] = m
+  entry.mdl = true
+  local name = type(result.name) == "string" and result.name or entry.name
+  return name .. (result.version ~= nil and (" " .. tostring(result.version)) or "")
+end
+
+-- MDL's ctx, the parts that need no ffi or memory access.
+function MDL.ctx(m)
+  local id = m.entry.name
+  MDL.store[id] = MDL.store[id] or {}
+  local ctx = { id = id, settings = MDL.store[id], host = "Boot Mod Loader",
+                loader = rawget(_G, "CowboyBingusModLoader"), mdl = rawget(_G, "MDL") }
+  function ctx.log(...)
+    m.lines = m.lines + 1
+    if m.lines > 200 then
+      if m.lines == 201 then say("[" .. id .. "] more lines this launch are not logged") end
+      return
+    end
+    local parts = {}
+    for i = 1, select("#", ...) do parts[#parts + 1] = tostring((select(i, ...))) end
+    say("[" .. id .. "] " .. table.concat(parts, " "))
+  end
+  function ctx.set(key, value)
+    ctx.settings[key] = value
+    MDL.save()
+  end
+  function ctx.on_cleanup(fn)
+    assert(type(fn) == "function", "cleanup must be a function")
+    m.cleanups[#m.cleanups + 1] = fn
+  end
+  function ctx.global(name, value)
+    m.globals[name] = true
+    rawset(_G, name, value)
+    return value
+  end
+  return ctx
+end
+
+function MDL.failed(m, what, why)
+  m.errors = m.errors + 1
+  if m.errors <= 5 then say(string.format("MDL mod %s: %s failed: %s", m.entry.name, what, tostring(why))) end
+  if m.errors >= 50 and m.on then
+    say(string.format("MDL mod %s: disabled for this launch after %d errors", m.entry.name, m.errors))
+    MDL.stop(m, false)
+  end
+end
+
+function MDL.enable(m)
+  m.tried = true
+  m.ctx = MDL.ctx(m)
+  local enable = m.def.on_enable
+  if type(enable) == "function" then
+    local ok, why = pcall(enable, m.ctx)
+    if not ok then
+      say(string.format("MDL mod %s: on_enable failed, not enabled: %s", m.entry.name, tostring(why)))
+      m.on = true                       -- (so its cleanups and on_disable run, as MDL's disable does)
+      MDL.stop(m, false)
+      return
+    end
+  end
+  m.on = true
+  say(string.format("MDL mod %s: enabled", m.entry.name))
+end
+
+-- The first frame: every MDL mod enabled, in load order; then the lists no
+-- mod registered are set aside (their options register in on_enable).
+function MDL.begin()
+  MDL.begun = true
+  if not MDL.read_done then MDL.read() end
+  for _, m in ipairs(MDL.mods) do
+    if not m.tried then
+      local ok, why = pcall(MDL.enable, m)
+      if not ok then say("MDL mod " .. m.entry.name .. ": " .. tostring(why)) end
+    end
+  end
+  MDL.save()
+  if MDL.sweep_later then
+    MDL.sweep_later = false
+    local swept, why = pcall(MOM.sweep, L.mods)
+    if not swept then say("settings window lists: " .. tostring(why)) end
+  end
+  flush()
+end
+
+function MDL.step(m, dt)
+  if not MDL.begun then MDL.begin() end
+  if not m.on then return end
+  local fn = m.def.on_update
+  if type(fn) ~= "function" then return end
+  local ok, why = pcall(fn, m.ctx, dt)
+  if not ok then MDL.failed(m, "on_update", why) end
+end
+
+-- Off: on_shutdown first when the game quits, then on_disable, its cleanups
+-- (last first) and the globals it set through ctx.global.
+function MDL.stop(m, quitting)
+  if not m.on then return end
+  m.on = false
+  local ctx = m.ctx
+  if quitting and type(m.def.on_shutdown) == "function" then
+    local ok, why = pcall(m.def.on_shutdown, ctx)
+    if not ok then say(string.format("MDL mod %s: on_shutdown failed: %s", m.entry.name, tostring(why))) end
+  end
+  if type(m.def.on_disable) == "function" then
+    local ok, why = pcall(m.def.on_disable, ctx)
+    if not ok then say(string.format("MDL mod %s: on_disable failed: %s", m.entry.name, tostring(why))) end
+  end
+  for i = #m.cleanups, 1, -1 do
+    local ok, why = pcall(m.cleanups[i])
+    if not ok then say(string.format("MDL mod %s: cleanup failed: %s", m.entry.name, tostring(why))) end
+  end
+  m.cleanups = {}
+  for name in pairs(m.globals) do rawset(_G, name, nil) end
+  m.globals = {}
+  MDL.save()
+  flush()
+end
+
+-- Each MDL mod's link in update and shutdown, compiled under its name (Mod
+-- Lag Watchdog names a link by its source and follows its one function
+-- upvalue, the chain below). update: the first mod loaded runs first;
+-- shutdown: the last first, ahead of the guests and the game's own.
+local MDL_LINK = "local previous, m, k = ...\n"
+  .. "return function(...)\n"
+  .. "  m[k](...)\n"
+  .. "  if previous ~= nil then return previous(...) end\n"
+  .. "end\n"
+
+function L.hook_mdl()
+  if L.mdl_hooked or #MDL.mods == 0 then return end
+  L.mdl_hooked = true
+  local function link(m, k)
+    local previous = rawget(_G, k)
+    if type(previous) ~= "function" then previous = nil end
+    local make, why = loadstring(MDL_LINK, "@" .. m.entry.name)
+    if make == nil then say("MDL mod " .. m.entry.name .. ": " .. tostring(why)) return end
+    rawset(_G, k, make(previous, m, k))
+  end
+  for i = #MDL.mods, 1, -1 do link(MDL.mods[i], "update") end
+  for i = 1, #MDL.mods do link(MDL.mods[i], "shutdown") end
+end
+
 -- ------------------------------------------------------------ running them
 
 -- A mod made for Chef Shared Loader only (see the top): not run here.
@@ -2067,7 +2321,9 @@ local function run(entry)
     if type(package) == "table" and type(package.loaded) == "table" and package.loaded[entry.name] == nil then
       package.loaded[entry.name] = (why == nil) and true or why
     end
-    say(string.format("%s (patch_%d, %d bytes): loaded in %.0f ms", entry.name, entry.patch, entry.size, took))
+    local mdl = MDL.adopt(entry, why)
+    say(string.format("%s (patch_%d, %d bytes): loaded in %.0f ms%s", entry.name, entry.patch, entry.size, took,
+                      mdl and "; written for MDL: " .. mdl .. ", enabled on the first frame" or ""))
   else
     entry.state = "failed"
     say(entry.name .. " (patch_" .. entry.patch .. "): FAILED: " .. tostring(why))
@@ -2276,7 +2532,9 @@ local function start()
     local ran, why = pcall(fn)
     if not ran then say("after_startup: " .. tostring(why)) end
   end
-  local swept, why = pcall(MOM.sweep, list)
+  -- (0.14.0) with MDL mods, after they enable on the first frame: their options register then
+  local swept, why = true, nil
+  if #MDL.mods > 0 then MDL.sweep_later = true else swept, why = pcall(MOM.sweep, list) end
   local planned, why2 = pcall(MOM.plan_translations, list)
   if not planned then say("translation packs: " .. tostring(why2)) end
   if not swept then say("settings window lists: " .. tostring(why)) end
@@ -2284,7 +2542,12 @@ local function start()
   for _, entry in ipairs(list) do if entry.state == "loaded" then loaded = loaded + 1 end end
   say(string.format("started %d of %d mods in %.0f ms", loaded, #list - #L.for_chef, (os.clock() - clock0) * 1000))
   L.started_done = true
+  if #MDL.mods > 0 then
+    pcall(MDL.read)
+    say(string.format("%d mod(s) written for MDL: enabled on the first frame", #MDL.mods))
+  end
   L.hook_guests()                                 -- before shutdown's hook: on_shutdown still comes last
+  L.hook_mdl()                                    -- after the guests: on the first frame they are there
   L.hook_shutdown()
   L.hook_update()
   flush()
